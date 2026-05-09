@@ -101,6 +101,16 @@ for (const renderable of derived.framingRenderables) {
   const dotLD = renderable.lengthAxis.x * renderable.depthAxis.x + renderable.lengthAxis.y * renderable.depthAxis.y + renderable.lengthAxis.z * renderable.depthAxis.z
   const dotWD = renderable.widthAxis.x * renderable.depthAxis.x + renderable.widthAxis.y * renderable.depthAxis.y + renderable.widthAxis.z * renderable.depthAxis.z
   assert.equal(Math.abs(dotLW) < 0.02 && Math.abs(dotLD) < 0.02 && Math.abs(dotWD) < 0.02, true, `${renderable.id} should have perpendicular local axes`)
+  const threeWidth = { x: renderable.widthAxis.x, y: renderable.widthAxis.z, z: renderable.widthAxis.y }
+  const threeLength = { x: renderable.lengthAxis.x, y: renderable.lengthAxis.z, z: renderable.lengthAxis.y }
+  const threeDepth = { x: renderable.depthAxis.x, y: renderable.depthAxis.z, z: renderable.depthAxis.y }
+  const threeCross = {
+    x: threeWidth.y * threeLength.z - threeWidth.z * threeLength.y,
+    y: threeWidth.z * threeLength.x - threeWidth.x * threeLength.z,
+    z: threeWidth.x * threeLength.y - threeWidth.y * threeLength.x,
+  }
+  const handedness = threeCross.x * threeDepth.x + threeCross.y * threeDepth.y + threeCross.z * threeDepth.z
+  assert.equal(Math.abs(handedness) > 0.98, true, `${renderable.id} should map to a non-reflected 3D basis after renderer handedness correction`)
 }
 
 const joist = derived.framing.find((member) => member.visualRole === 'joist')

@@ -229,7 +229,12 @@ function formatFeetInches(value: number): string {
 function memberQuaternionFromAxes(item: FramingRenderable): Quaternion {
   const xAxis = toThreeAxis(item.widthAxis)
   const yAxis = toThreeAxis(item.lengthAxis)
-  const zAxis = toThreeAxis(item.depthAxis)
+  const desiredDepth = toThreeAxis(item.depthAxis)
+  let zAxis = new Vector3().crossVectors(xAxis, yAxis).normalize()
+  if (zAxis.dot(desiredDepth) < 0) {
+    xAxis.multiplyScalar(-1)
+    zAxis = new Vector3().crossVectors(xAxis, yAxis).normalize()
+  }
   const matrix = new Matrix4().makeBasis(xAxis, yAxis, zAxis)
   return new Quaternion().setFromRotationMatrix(matrix)
 }

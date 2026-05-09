@@ -114,7 +114,22 @@ function wallAxes(dx: number, dy: number) {
 function quaternionFromAxes(widthAxis: Point3, lengthAxis: Point3, depthAxis: Point3): QuaternionTuple {
   const wx = { x: widthAxis.x, y: widthAxis.z, z: widthAxis.y }
   const ly = { x: lengthAxis.x, y: lengthAxis.z, z: lengthAxis.y }
-  const dz = { x: depthAxis.x, y: depthAxis.z, z: depthAxis.y }
+  const mappedDepth = { x: depthAxis.x, y: depthAxis.z, z: depthAxis.y }
+  let dz = {
+    x: wx.y * ly.z - wx.z * ly.y,
+    y: wx.z * ly.x - wx.x * ly.z,
+    z: wx.x * ly.y - wx.y * ly.x,
+  }
+  if (dz.x * mappedDepth.x + dz.y * mappedDepth.y + dz.z * mappedDepth.z < 0) {
+    wx.x *= -1
+    wx.y *= -1
+    wx.z *= -1
+    dz = {
+      x: wx.y * ly.z - wx.z * ly.y,
+      y: wx.z * ly.x - wx.x * ly.z,
+      z: wx.x * ly.y - wx.y * ly.x,
+    }
+  }
   const m00 = wx.x
   const m01 = ly.x
   const m02 = dz.x
