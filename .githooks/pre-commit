@@ -1,0 +1,17 @@
+#!/bin/sh
+# Prevent committing changes that enable unofficial scrapers or opt-ins
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM)
+if [ -z "$STAGED_FILES" ]; then
+  exit 0
+fi
+PATTERN='HOMEDPOT_MODE\s*=\s*unofficial|ALLOW_UNOFFICIAL\s*=\s*true'
+for f in $STAGED_FILES; do
+  if [ -f "$f" ]; then
+    if grep -nE "$PATTERN" "$f" >/dev/null 2>&1; then
+      echo "ERROR: Committing file $f which contains unofficial scrapers flags. Remove before committing."
+      grep -nE "$PATTERN" "$f" || true
+      exit 1
+    fi
+  fi
+done
+exit 0

@@ -1,19 +1,23 @@
 import type React from 'react'
 import { EditorMode, ProjectDocument, TerrainPoint } from '../../bim/types'
 import useBimProjectStore from '../../stores/bimProjectStore'
+import families from '../../bim/families'
 import { modeMeta } from '../constants'
 import { EditorDerivedData } from '../selectors'
 import { EditorToolId, LayerId } from '../types'
 import { NumberField, SelectField, Metric } from '../ui/FormControls'
+import { Icon } from '../ui/Icons'
 
 export function ToolPanel({
   project,
   data,
   onSelectViolation,
+  onReviewFloorUpdates,
 }: {
   project: ProjectDocument
   data: EditorDerivedData
   onSelectViolation: (id: string | undefined) => void
+  onReviewFloorUpdates: (floorId: string) => void
 }) {
   const mode = useBimProjectStore((state) => state.mode)
 
@@ -23,7 +27,7 @@ export function ToolPanel({
         <h2>{modeMeta[mode].label}</h2>
         <p>{modeMeta[mode].description}</p>
       </div>
-      <ModeTools mode={mode} project={project} data={data} onSelectViolation={onSelectViolation} />
+      <ModeTools mode={mode} project={project} data={data} onSelectViolation={onSelectViolation} onReviewFloorUpdates={onReviewFloorUpdates} />
       <ProjectOutliner project={project} data={data} />
     </aside>
   )
@@ -34,14 +38,16 @@ function ModeTools({
   project,
   data,
   onSelectViolation,
+  onReviewFloorUpdates,
 }: {
   mode: EditorMode
   project: ProjectDocument
   data: EditorDerivedData
   onSelectViolation: (id: string | undefined) => void
+  onReviewFloorUpdates: (floorId: string) => void
 }) {
   if (mode === 'site') return <SiteTools project={project} />
-  if (mode === 'structure') return <StructureTools project={project} data={data} />
+  if (mode === 'structure') return <StructureTools project={project} data={data} onReviewFloorUpdates={onReviewFloorUpdates} />
   if (mode === 'openings') return <OpeningTools project={project} />
   if (mode === 'roof') return <RoofTools project={project} />
   if (mode === 'electrical') return <SystemsTools project={project} />
@@ -103,7 +109,15 @@ function TerrainPointRow({ point, onChange }: { point: TerrainPoint; onChange: (
   )
 }
 
-function StructureTools({ project, data }: { project: ProjectDocument; data: EditorDerivedData }) {
+function StructureTools({
+  project,
+  data,
+  onReviewFloorUpdates,
+}: {
+  project: ProjectDocument
+  data: EditorDerivedData
+  onReviewFloorUpdates: (floorId: string) => void
+}) {
   const setActiveTool = useBimProjectStore((state) => state.setActiveTool)
   const addDeck = useBimProjectStore((state) => state.addDeck)
   const addHalfWall = useBimProjectStore((state) => state.addHalfWall)
@@ -113,55 +127,77 @@ function StructureTools({ project, data }: { project: ProjectDocument; data: Edi
   const createFloorFromWallBounds = useBimProjectStore((state) => state.createFloorFromWallBounds)
   const createSpacesFromWallLoops = useBimProjectStore((state) => state.createSpacesFromWallLoops)
   const cleanWallConnections = useBimProjectStore((state) => state.cleanWallConnections)
+  const cleanPolygonFootprint = useBimProjectStore((state) => state.cleanPolygonFootprint)
+  const selectedId = useBimProjectStore((state) => state.selectedId)
+  const selected = project.elements.find((element) => element.id === selectedId)
   const floors = project.elements.filter((element) => element.type === 'floor').length
   const walls = project.elements.filter((element) => element.type === 'wall').length
   const piers = data.derived.framing.filter((member) => member.subsystem === 'pier').length
+  const warnings = data.rules.filter((rule) => rule.status !== 'pass').length
+  const unresolved = data.derived.unresolvedIntersections.length
 
   return (
     <>
-      <div className="panel-section">
-        <h3>Build Tools</h3>
-        <div className="tool-command-row">
-          <ToolButton toolId="select" onClick={() => setActiveTool('select')}>Select</ToolButton>
-          <ToolButton toolId="drawFloor" onClick={() => setActiveTool('drawFloor')}>Floor</ToolButton>
-          <ToolButton toolId="drawWall" onClick={() => setActiveTool('drawWall')}>Wall</ToolButton>
-          <ToolButton toolId="placeOpening" onClick={() => setActiveTool('placeOpening')}>Opening</ToolButton>
-          <ToolButton toolId="drawRoof" onClick={() => setActiveTool('drawRoof')}>Roof</ToolButton>
+      <div className="panel-section studio-tool-section">
+        <h3>Draw / Edit</h3>
+        <div className="tool-command-row professional">
+          <ToolButton toolId="select" icon={<Icon name="pointer" />} onClick={() => setActiveTool('select')}>Select</ToolButton>
+          <ToolButton toolId="drawFloor" icon={<Icon name="grid" />} onClick={() => setActiveTool('drawFloor')}>Floor</ToolButton>
+          <ToolButton toolId="drawWall" icon={<Icon name="wall" />} onClick={() => setActiveTool('drawWall')}>Wall</ToolButton>
+          <ToolButton toolId="pushPull" icon={<Icon name="draw" />} onClick={() => setActiveTool('pushPull')}>Push / Pull</ToolButton>
+          <ToolButton toolId="placeOpening" icon={<Icon name="door" />} onClick={() => setActiveTool('placeOpening')}>Opening</ToolButton>
+          <ToolButton toolId="drawRoof" icon={<Icon name="roof" />} onClick={() => setActiveTool('drawRoof')}>Roof</ToolButton>
         </div>
-        <details className="tool-group" open>
-          <summary>Floor, Deck, Foundation</summary>
-          <div className="button-stack">
-            <ToolButton toolId="drawFloor" onClick={() => setActiveTool('drawFloor')}>Draw raised floor</ToolButton>
-            <button onClick={createFloorFromWallBounds}>Floor from wall envelope</button>
-            <button onClick={addDeck}>Add deck platform</button>
-            <button onClick={() => addAccessory('column')}>Add post/column</button>
-            <button onClick={() => addAccessory('landing')}>Add landing</button>
-          </div>
-        </details>
-        <details className="tool-group" open>
-          <summary>Walls and Openings</summary>
-          <div className="button-stack">
-            <ToolButton toolId="drawWall" onClick={() => setActiveTool('drawWall')}>Draw wall segment</ToolButton>
-            <button onClick={addHalfWall}>Add half wall</button>
-            <button onClick={cleanWallConnections}>Clean wall connections</button>
-            <button onClick={createSpacesFromWallLoops}>Detect rooms from loops</button>
-            <ToolButton toolId="placeOpening" onClick={() => setActiveTool('placeOpening')}>Place door/window</ToolButton>
-            <button onClick={() => addAccessory('guardRail')}>Add guard/rail</button>
-          </div>
-        </details>
-        <details className="tool-group" open>
-          <summary>Roof and Access</summary>
-          <div className="button-stack">
-            <ToolButton toolId="drawRoof" onClick={() => setActiveTool('drawRoof')}>Draw roof footprint</ToolButton>
-            <button onClick={createRoofFromSelection}>Roof from selected envelope</button>
-            <button onClick={addStair}>Add access stairs</button>
-          </div>
-        </details>
       </div>
-      <div className="panel-section metric-grid">
-        <Metric label="Floors" value={String(floors)} />
-        <Metric label="Walls" value={String(walls)} />
-        <Metric label="Derived piers" value={String(piers)} />
+      <div className="panel-section studio-tool-section">
+        <h3>Footprint</h3>
+        <div className="button-stack">
+          <ToolButton toolId="attachAddition" icon={<Icon name="box" />} onClick={() => setActiveTool('attachAddition')}>Attach addition</ToolButton>
+          <ToolButton toolId="splitFootprint" icon={<Icon name="draw" />} onClick={() => setActiveTool('splitFootprint')}>Split edge</ToolButton>
+          <ToolButton toolId="deleteFootprintVertex" icon={<Icon name="warning" />} onClick={() => setActiveTool('deleteFootprintVertex')}>Delete vertex</ToolButton>
+          <button onClick={() => selected && (selected.type === 'floor' || selected.type === 'roof') && cleanPolygonFootprint(selected.id)} disabled={!selected || (selected.type !== 'floor' && selected.type !== 'roof')}>
+            <Icon name="spark" /> Clean footprint
+          </button>
+          <button onClick={() => selected?.type === 'floor' && onReviewFloorUpdates(selected.id)} disabled={selected?.type !== 'floor'}>
+            <Icon name="check" /> Review updates
+          </button>
+        </div>
+      </div>
+      <div className="panel-section studio-tool-section">
+        <h3>Generate</h3>
+        <div className="button-stack">
+          <button onClick={createFloorFromWallBounds}><Icon name="grid" /> Floor from walls</button>
+          <button onClick={createSpacesFromWallLoops}><Icon name="home" /> Detect rooms</button>
+          <button onClick={createRoofFromSelection}><Icon name="roof" /> Roof from envelope</button>
+          <button onClick={cleanWallConnections}><Icon name="wall" /> Clean wall joins</button>
+          <button onClick={addDeck}><Icon name="box" /> Add deck platform</button>
+          <button onClick={() => addAccessory('column')}><Icon name="measure" /> Add post / column</button>
+          <button onClick={addHalfWall}><Icon name="wall" /> Add half wall</button>
+          <button onClick={() => addAccessory('guardRail')}><Icon name="layers" /> Add guard / rail</button>
+          <button onClick={() => addAccessory('landing')}><Icon name="panel" /> Add landing</button>
+          <button onClick={addStair}><Icon name="move" /> Add access stairs</button>
+        </div>
+      </div>
+      <div className="panel-section">
+        <h3>Families</h3>
+        <div className="row-list">
+          {Object.entries(families).map(([key, def]: any) => (
+            <button key={key} className="row-button" onClick={() => useBimProjectStore.getState().createFamilyInstance(key, def.defaultParams, { x: 8, y: 8 })}>
+              {def.displayName}
+              <span>{def.description}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="panel-section studio-tool-section">
+        <h3>Layers / Diagnostics</h3>
+        <div className="metric-grid">
+          <Metric label="Floors" value={String(floors)} />
+          <Metric label="Walls" value={String(walls)} />
+          <Metric label="Derived piers" value={String(piers)} />
+          <Metric label="Flags" value={String(warnings)} tone={warnings ? 'warn' : 'good'} />
+          <Metric label="Unresolved joins" value={String(unresolved)} tone={unresolved ? 'bad' : 'good'} />
+        </div>
       </div>
       <OpeningTools project={project} />
       <RoofTools project={project} />
@@ -287,7 +323,54 @@ function MaterialTools({ data }: { project: ProjectDocument; data: EditorDerived
           ))}
         </div>
       </div>
+      <div className="panel-section">
+        <h3>Operation Stack (prototype)</h3>
+        <OperationStack />
+      </div>
     </>
+  )
+}
+
+function OperationStack() {
+  const operations = useBimProjectStore((state) => state.operations)
+  const replay = useBimProjectStore((state) => state.replayOperations)
+  const exportOps = useBimProjectStore((state) => state.exportOperations)
+  const importOps = useBimProjectStore((state) => state.importOperations)
+  const clearOps = useBimProjectStore((state) => state.clearOperations)
+  const persistCheckpoint = useBimProjectStore((state) => state.persistCheckpoint)
+  const undoOperation = useBimProjectStore((state) => state.undoOperation)
+  const redoOperation = useBimProjectStore((state) => state.redoOperation)
+  return (
+    <div>
+      <div className="row-list">
+        {operations.length === 0 && <div className="data-row">(no operations recorded)</div>}
+        {operations.map((op) => (
+          <div key={op.id} className="data-row">
+            <strong>{op.kind}</strong>
+            <small style={{ marginLeft: 8 }}>{JSON.stringify(op.params)}</small>
+          </div>
+        ))}
+      </div>
+      <div style={{ marginTop: 8 }}>
+        <button onClick={() => replay()} disabled={operations.length === 0}>Replay operations</button>
+        <button onClick={async () => {
+          try {
+            await navigator.clipboard.writeText(exportOps())
+            alert('Operations copied to clipboard')
+          } catch (e) {
+            prompt('Export operations JSON', exportOps())
+          }
+        }} disabled={operations.length === 0} style={{ marginLeft: 8 }}>Export</button>
+        <button onClick={() => {
+          const json = prompt('Paste operations JSON to import')
+          if (json) importOps(json)
+        }} style={{ marginLeft: 8 }}>Import</button>
+        <button onClick={() => { if (confirm('Clear all recorded operations and checkpoints?')) clearOps() }} style={{ marginLeft: 8 }}>Clear</button>
+        <button onClick={() => { persistCheckpoint(); alert('Checkpoint saved') }} style={{ marginLeft: 8 }}>Save checkpoint</button>
+        <button onClick={() => undoOperation()} style={{ marginLeft: 8 }}>Undo</button>
+        <button onClick={() => redoOperation()} style={{ marginLeft: 8 }}>Redo</button>
+      </div>
+    </div>
   )
 }
 
@@ -331,12 +414,12 @@ function BlueprintTools({ data }: { project: ProjectDocument; data: EditorDerive
   )
 }
 
-function ToolButton({ toolId, onClick, children }: { toolId: EditorToolId; onClick: () => void; children: React.ReactNode }) {
+function ToolButton({ toolId, icon, onClick, children }: { toolId: EditorToolId; icon?: React.ReactNode; onClick: () => void; children: React.ReactNode }) {
   const activeTool = useBimProjectStore((state) => state.activeTool)
   const toolSession = useBimProjectStore((state) => state.toolSession)
   return (
     <button className={activeTool === toolId ? 'tool-button active' : 'tool-button'} onClick={onClick}>
-      <span>{children}</span>
+      <span>{icon && <span className="tool-icon">{icon}</span>}{children}</span>
       {activeTool === toolId && <small>{toolSession ? 'In progress' : 'Ready on canvas'}</small>}
     </button>
   )

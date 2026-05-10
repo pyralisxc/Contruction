@@ -1,0 +1,21 @@
+name: CI - Robots Test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  robots-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run robots test
+        run: npm run test:robots
+        env:
+          CI: true

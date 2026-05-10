@@ -4,8 +4,12 @@ export type EditorToolId =
   | 'select'
   | 'drawFloor'
   | 'drawWall'
+  | 'pushPull'
   | 'placeOpening'
   | 'drawRoof'
+  | 'attachAddition'
+  | 'splitFootprint'
+  | 'deleteFootprintVertex'
   | 'addTerrainPoint'
   | 'placeElectricalDevice'
   | 'placePlumbingFixture'
@@ -14,16 +18,22 @@ export type EditorToolId =
 
 export type ViewportPanelMode = '3d' | 'diagram' | 'hidden'
 
+export type WorkspaceMode = 'plan2d' | 'framing3d' | 'split' | 'sheets' | 'materials' | 'code'
+
 export type SelectionHandle =
   | 'move'
   | 'floor-nw'
   | 'floor-ne'
   | 'floor-se'
   | 'floor-sw'
+  | `floor-vertex-${number}`
+  | `floor-edge-${number}`
   | 'roof-nw'
   | 'roof-ne'
   | 'roof-se'
   | 'roof-sw'
+  | `roof-vertex-${number}`
+  | `roof-edge-${number}`
   | 'wall-start'
   | 'wall-end'
   | 'opening-center'

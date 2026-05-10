@@ -6,19 +6,19 @@ This roadmap grades the current app against the original Contractor Hub vision a
 
 | Subsystem | Current Grade | Current State | Main Gap |
 |---|---:|---|---|
-| Editor shell and navigation | 6/10 | Professional multi-panel editor with modes, inspector, layers, and 2D/3D workspace. | Needs smoother workflows, command affordances, construction-specific outliner, and fewer legacy-feeling panels. |
+| Editor shell and navigation | 6.5/10 | Professional multi-panel editor with modes, inspector, layers, 2D/3D workspace, adaptive panels, and reviewed update workflows. | Needs visual diff overlays, deeper command affordances, construction-specific outliner, and browser visual regression coverage. |
 | BIM-lite data model | 6/10 | `ProjectDocument`, elements, assemblies, materials, derived framing, support grids, bearing points, rules, takeoff. | Needs migrations, stronger rule provenance, richer accessories, and shared client/server schema. |
 | Terrain/site | 4/10 | Flat/sloped/TIN-like height points, mesh, contours, pier sampling. | Needs editable boundaries, true TIN/contours, pads, cut/fill, survey import, drainage. |
 | Floor/foundation framing | 6/10 | Joists, rim/band joists, beams, blocking, support grids, posts, pier blocks, terrain-derived heights. | Needs true trimmed solids, footing rules, bracing, connector logic, beam sizing, deck/porch support depth. |
 | Wall/opening framing | 5/10 | Studs, plates, corner packs, tee/ladder backing, headers, trimmers, cripples, half-wall caps. | Needs robust wall joins, sheathing/bracing/shear, exact cut solids, wall-type catalogs, and intersection solver. |
-| Roof framing | 5/10 | Gable/shed starters, rafters, ridge, fascia, rake boards, ties, gable infill, purlin/batten modes, structural purlin struts. | Needs hip/valley/dormer/porch/lean-to depth, proper cut solids, collar ties, trusses, roof-material-specific assemblies. |
+| Roof framing | 6/10 | Gable, shed, lean-to, hip, cross-gable, valley, dormer, porch, roof-over-deck, flat, low-slope, gambrel, and mansard families now derive physical rafters/planes/topology records. | Needs exact plane intersection solving, proper cut solids, collar ties, trusses, product-specific purlin/decking rules, and engineered cut metadata. |
 | Member orientation | 6/10 | `MemberOrientation`, `StructuralMemberSpec`, dimensional profiles, cut/stock metadata, validation. | Needs user-editable orientation debug, stronger structural rule packs, and true geometry orientation/cut faces. |
 | Assemblies/layers | 6/10 | Assembly layers, envelope surfaces, layer takeoff fragments, completeness checks. | Needs richer assembly catalogs, material alternatives, stage toggles, and layer-specific visual peeling. |
-| Rules/code | 4/10 | Starter warnings, orientation validation, assembly checks, purlin mode logic, load-path checks. | Needs data-driven rule packs, full span tables, state profiles, egress, energy, MEP rules, provenance. |
+| Rules/code | 4/10 | Starter warnings, orientation validation, assembly checks, purlin mode logic, real-polygon load-path checks. | Needs data-driven rule packs, full span tables, state profiles, egress, energy, MEP rules, provenance. |
 | MEP | 2/10 | Devices, circuits, fixtures, pipes, ducts, starter placement. | Needs routing, circuit schedules, outlet spacing, DWV/venting, slope validation, clash-grade geometry. |
-| Materials/takeoff | 5/10 | Framing takeoff, cut/stock lengths, layer fragments, floor/wall/roof basics, mock supplier matches. | Needs connectors/fasteners, exact cut optimization, roll/bundle conversions, SKU mapping depth. |
+| Materials/takeoff | 6/10 | Framing takeoff, cut/stock lengths, layer fragments, purchase-unit metadata, sheet/roll/bundle/board conversion, connector/fastener allowances, and mock supplier matches. | Needs exact cut optimization, SKU mapping depth, source reconciliation views, and supplier price/availability snapshots. |
 | Blueprints/export | 2/10 | JSON/CSV/export stubs and simple sheet preview. | Needs scaled PDF sheets, schedules, dimensions, elevations, sections, symbols. |
-| Persistence/backend | 3/10 | API boundaries and shared service logic. | Needs durable project storage, snapshots, migrations, auth-ready boundaries. |
+| Persistence/backend | 4/10 | API storage with local fallback, saved-project switcher, new project tab/template, import/export, and client migration/defaulting for new material/roof fields. | Needs durable database storage, snapshots, auth-ready boundaries, collaboration, and migration tests. |
 | Testing | 4/10 | Build and geometry golden test. | Needs broad unit, browser, visual, rules, takeoff, and export tests. |
 
 Overall current grade: **5/10**. The app has moved from prototype toward a real BIM-lite construction model, but contractor-grade reliability still depends on trimmed solids, construction-style depth, full rule packs, and robust takeoff/export workflows.
@@ -146,6 +146,41 @@ Status: partially implemented.
 - Full roof family support.
 - Construction accessories: decks, porches, stairs, landings, rails/guards, posts/columns, connectors, and exterior trim systems.
 - Data-driven span/load/deck/footing rules.
+
+## Step 7C-A: Geometry Fidelity And Editor Constraints
+
+Status: first slice implemented.
+
+### Implemented
+
+- 3D floor surfaces now render from the real floor polygon rather than bounding boxes.
+- Bearing-wall support checks sample the actual floor polygon to avoid false support in missing corners or notches.
+- Door/window opening placement and handle resizing clamp to the host wall segment.
+- Wall solids derive from assembly thickness with inside/outside faces, layer bands, and hosted opening voids.
+- Floor and roof footprints support vertex handles, edge handles, attached additions, hover previews, split edge, delete vertex, and cleanup.
+- Exterior walls and roof footprints can be reviewed and previewed from an edited floor footprint before committing the change.
+- Site intelligence lookup has a first server/client slice for elevation, weather grid metadata, climate zone, and keyed provider readiness.
+- The editor shell has an adaptive panel baseline so tools and inspector remain readable in partial windows.
+- Geometry tests cover zero-length wall rejection, L-shaped floor member containment, and a bearing wall that sits inside floor bounds but outside the actual floor polygon.
+
+### Remaining
+
+- Roof planes and framing now have first-pass topology for all declared roof families, but need exact plane-intersection solving and construction-grade cutback rules.
+- Member meshes need true cut faces from metadata rather than symbolic skew markers.
+- Browser visual regression tests are still needed for full-window, partial-window, tablet, and narrow editor layouts.
+- Review-preview diff overlays should make changed walls, roofs, and openings obvious before Apply.
+
+## UX Layout Standard
+
+Goal: make the BIM editor feel compact, professional, native, and readable even as the window narrows.
+
+- `>= 1360px`: show mode rail, tool panel, canvas/3D workspace, and inspector together.
+- `1100-1359px`: keep tools visible; inspector becomes a right drawer.
+- `760-1099px`: make tools and inspector mutually exclusive drawers, with canvas prioritized.
+- `< 760px`: use a canvas-first layout with top mode navigation and bottom-sheet tools/inspector.
+- No editable field should compress below `96px`; tables scroll before columns become unreadable.
+- Topbar commands use overflow menus so Store, Cart, Load, Save, BOM, and Blueprint remain reachable.
+- Every shell change must verify the footprint review modal, material/takeoff readability, and no console/framework errors at the supported widths.
 
 ## Step 7C: Trimmed Solids, Style Catalogs, And Building Accessories
 
@@ -309,3 +344,13 @@ Design intent -> physical components -> validation -> takeoff -> rendering -> ex
 ```
 
 If a feature only changes the drawing but not the physical component model, it is not enough for contractor-grade work.
+
+## Cleanup And Handoff Standard
+
+Generated artifacts are not part of normal roadmap work. Keep `client/dist`, Vite cache, dependency folders, logs, and local env files out of feature diffs. The expected pre-handoff checks are:
+
+```bash
+npm test
+cd client && npx tsc --noEmit
+cd ../server && npm run build
+```

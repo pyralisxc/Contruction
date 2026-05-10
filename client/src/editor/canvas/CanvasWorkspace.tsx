@@ -1,21 +1,26 @@
+import type React from 'react'
 import useBimProjectStore from '../../stores/bimProjectStore'
 import { ProjectDocument } from '../../bim/types'
 import { EditorDerivedData } from '../selectors'
 import { Metric } from '../ui/FormControls'
+import { Icon } from '../ui/Icons'
 import { FramingViewport } from './FramingViewport'
 import { PlanCanvas } from './PlanCanvas'
 
 export function CanvasWorkspace({
   project,
   data,
+  onNewProject,
   onSelect,
 }: {
   project: ProjectDocument
   data: EditorDerivedData
+  onNewProject: () => void
   onSelect: (id: string | null) => void
 }) {
   const viewMode = useBimProjectStore((state) => state.viewMode)
-  const setViewMode = useBimProjectStore((state) => state.setViewMode)
+  const workspaceMode = useBimProjectStore((state) => state.workspaceMode)
+  const setWorkspaceMode = useBimProjectStore((state) => state.setWorkspaceMode)
   const modelDisplayMode = useBimProjectStore((state) => state.modelDisplayMode)
   const setModelDisplayMode = useBimProjectStore((state) => state.setModelDisplayMode)
   const selectedId = useBimProjectStore((state) => state.selectedId)
@@ -26,50 +31,74 @@ export function CanvasWorkspace({
 
   return (
     <main className="canvas-column">
-      <div className="canvas-tabs">
-        <button className={viewMode !== 'blueprint' && viewMode !== 'takeoff' ? 'active' : ''} onClick={() => setViewMode('framing')}>
-          Model
-        </button>
-        <button className={viewMode === 'blueprint' ? 'active' : ''} onClick={() => setViewMode('blueprint')}>
-          Sheets
-        </button>
-        <button className={viewMode === 'takeoff' ? 'active' : ''} onClick={() => setViewMode('takeoff')}>
-          Materials
-        </button>
-        <span className="canvas-tab-spacer" />
-        <button className={viewportPanel === '3d' ? 'active secondary' : 'secondary'} onClick={() => setViewportPanel('3d')}>
-          3D
-        </button>
-        <button className={viewportPanel === 'diagram' ? 'active secondary' : 'secondary'} onClick={() => setViewportPanel('diagram')}>
-          Diagram
-        </button>
-        <button className={viewportPanel === 'hidden' ? 'active secondary' : 'secondary'} onClick={() => setViewportPanel('hidden')}>
-          Hide 3D
-        </button>
-        <span className="viewport-stat">{frameCount} members</span>
-        <span className="viewport-stat">{pierCount} piers</span>
-        <span className="canvas-tab-spacer" />
-        {(['framing', 'architectural', 'painted'] as const).map((mode) => (
-          <button key={mode} className={modelDisplayMode === mode ? 'active secondary' : 'secondary'} onClick={() => setModelDisplayMode(mode)}>
-            {mode === 'framing' ? 'Frame' : mode === 'architectural' ? 'Arch' : 'Painted'}
-          </button>
-        ))}
-      </div>
-      {viewMode === 'blueprint' ? (
+      <CanvasDocumentTabs projectName={project.name} workspaceMode={workspaceMode} onNewProject={onNewProject} onModeChange={setWorkspaceMode} />
+      {workspaceMode === 'sheets' ? (
         <BlueprintPreview project={project} data={data} />
-      ) : viewMode === 'takeoff' ? (
+      ) : workspaceMode === 'materials' ? (
         <TakeoffPreview project={project} data={data} />
       ) : (
-        <div className={viewportPanel === 'hidden' ? 'single-canvas' : 'dual-canvas'}>
-          <PlanCanvas project={project} data={data} selectedId={selectedId} viewMode={viewMode} onSelect={onSelect} />
-          {viewportPanel !== 'hidden' && (
-            <div className="three-wrap">
-              <FramingViewport project={project} data={data} viewMode={viewMode} selectedId={selectedId} onSelect={onSelect} panelMode={viewportPanel} />
-            </div>
+        <div className={`viewer-stack viewer-${workspaceMode}`}>
+          {workspaceMode !== 'framing3d' && (
+            <section className="viewer-panel plan-panel">
+              <CanvasPanelHeader title={workspaceMode === 'code' ? '2D Code Plan' : '2D Plan'}>
+                <span className="viewport-stat">{frameCount} members</span>
+                <span className="viewport-stat compact-hint">Compact: 2D | 3D | Split</span>
+              </CanvasPanelHeader>
+              <PlanCanvas project={project} data={data} selectedId={selectedId} viewMode={workspaceMode === 'code' ? 'code' : viewMode} onSelect={onSelect} />
+            </section>
+          )}
+          {workspaceMode !== 'plan2d' && (
+            <section className="viewer-panel three-panel">
+              <CanvasPanelHeader title={viewportPanel === 'diagram' ? 'Framing Diagram' : '3D Framing'}>
+                <div className="panel-control-group">
+                  <button className={viewportPanel === '3d' ? 'active secondary' : 'secondary'} onClick={() => setViewportPanel('3d')}><Icon name="cube" /> 3D</button>
+                  <button className={viewportPanel === 'diagram' ? 'active secondary' : 'secondary'} onClick={() => setViewportPanel('diagram')}><Icon name="activity" /> Diagram</button>
+                </div>
+                <span className="viewport-stat">{pierCount} piers</span>
+                <div className="panel-control-group">
+                  {(['framing', 'architectural', 'painted'] as const).map((mode) => (
+                    <button key={mode} className={modelDisplayMode === mode ? 'active secondary' : 'secondary'} onClick={() => setModelDisplayMode(mode)}>
+                      {mode === 'framing' ? 'Frame' : mode === 'architectural' ? 'Arch' : 'Paint'}
+                    </button>
+                  ))}
+                </div>
+              </CanvasPanelHeader>
+              <div className="three-wrap">
+                <FramingViewport project={project} data={data} viewMode={workspaceMode === 'code' ? 'code' : viewMode} selectedId={selectedId} onSelect={onSelect} panelMode={viewportPanel === 'hidden' ? '3d' : viewportPanel} />
+              </div>
+            </section>
           )}
         </div>
       )}
     </main>
+  )
+}
+
+function CanvasDocumentTabs({
+  projectName,
+  workspaceMode,
+  onNewProject,
+  onModeChange,
+}: {
+  projectName: string
+  workspaceMode: ReturnType<typeof useBimProjectStore.getState>['workspaceMode']
+  onNewProject: () => void
+  onModeChange: ReturnType<typeof useBimProjectStore.getState>['setWorkspaceMode']
+}) {
+  return (
+    <div className="canvas-tabs document-tabs">
+      <button className={workspaceMode !== 'sheets' && workspaceMode !== 'materials' ? 'active' : ''} onClick={() => onModeChange('split')} title={projectName}>{projectName}</button>
+      <button className="add-tab" onClick={onNewProject} aria-label="Add project tab">+</button>
+    </div>
+  )
+}
+
+function CanvasPanelHeader({ children, title }: { children?: React.ReactNode; title: string }) {
+  return (
+    <div className="canvas-panel-header">
+      <strong>{title}</strong>
+      <div className="canvas-panel-actions">{children}</div>
+    </div>
   )
 }
 
@@ -121,7 +150,7 @@ function TakeoffPreview({ data }: { project: ProjectDocument; data: EditorDerive
                   <td>{line.location}</td>
                   <td>{line.description}</td>
                   <td>
-                    {line.quantity.toFixed(1)} {line.unit}
+                    {(line.purchaseQuantity ?? line.quantity).toFixed(1)} {line.purchaseUnit ?? line.unit}
                   </td>
                 </tr>
               ))}

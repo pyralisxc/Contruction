@@ -129,6 +129,9 @@ const NEARBY_STORES = [
   },
 ]
 
+import { NormalizedOffer } from '../../../shared/types/store'
+import { HomeDepotAdapter } from '../adapters'
+
 export class StoreService {
   searchProducts(params: StoreSearchParams): StoreProduct[] {
     const { query = '', category, maxPrice, minPrice, inStockOnly = false, sortBy = 'price', sortOrder = 'asc' } = params
@@ -164,6 +167,54 @@ export class StoreService {
     return MOCK_PRODUCTS.filter((p) => p.storeId === storeId)
   }
 
+  async getOffersByStore(storeId: string, opts?: { query?: string; zipCode?: string }): Promise<NormalizedOffer[]> {
+    const query = opts?.query
+    const zipCode = opts?.zipCode
+
+    // If a query is provided prefer adapter search (which may include inventory for a given store)
+    try {
+      if (storeId && storeId.startsWith('hd-') && (HomeDepotAdapter as any)) {
+        if (query) {
+          return await (HomeDepotAdapter as any).search(query, { storeId, zipCode })
+        }
+        if ((HomeDepotAdapter as any).getProductsByStore) {
+          return await (HomeDepotAdapter as any).getProductsByStore(storeId)
+        }
+      }
+    } catch (e) {
+      // fall through to mock provider
+    }
+
+    // Fallback: normalize mock products
+    const products = this.getProductsByStore(storeId)
+    return products.map((p) => this.normalizeToOffer(p))
+  }
+
+  normalizeToOffer(product: StoreProduct): NormalizedOffer {
+    const offerId = `${product.storeId}-${product.sku}-${product.id}`
+    const packSize = product.unit === 'box' || product.unit === 'each' ? 1 : undefined
+    return {
+      offerId,
+      storeId: product.storeId,
+      storeName: product.storeName,
+      storeType: product.storeType,
+      sku: product.sku,
+      title: product.productName,
+      price: product.price,
+      currency: 'USD',
+      unit: product.unit as any,
+      packSize,
+      unitPrice: product.price,
+      quantityAvailable: product.quantityAvailable,
+      inStock: product.inStock,
+      leadTimeDays: undefined,
+      productUrl: product.productUrl,
+      imageUrl: product.imageUrl,
+      meta: { category: product.category, subcategory: product.subcategory },
+      lastUpdated: product.lastUpdated,
+    }
+  }
+
   comparePrices(productNames: string[], params: Partial<StoreSearchParams>): PriceComparison[] {
     return productNames.flatMap((productName) => {
       const matches = this.searchProducts({ query: productName, zipCode: params.zipCode ?? '96813', ...params })
@@ -190,10 +241,12 @@ export class StoreService {
   createCart(items: CartItem[]): Record<string, { product: StoreProduct; quantity: number }[]> {
     const cartByStore: Record<string, { product: StoreProduct; quantity: number }[]> = {}
     for (const item of items) {
-      const product = MOCK_PRODUCTS.find((p) => p.id === item.productId)
+      // accept either productId or sku for client flexibility
+      const product = MOCK_PRODUCTS.find((p) => p.id === item.productId || p.sku === (item as any).sku)
       if (!product) continue
       if (!cartByStore[product.storeId]) cartByStore[product.storeId] = []
-      cartByStore[product.storeId].push({ product, quantity: item.quantity })
+      const qty = Number.isFinite(Number(item.quantity)) && Number(item.quantity) > 0 ? Math.floor(Number(item.quantity)) : 1
+      cartByStore[product.storeId].push({ product, quantity: qty })
     }
     return cartByStore
   }

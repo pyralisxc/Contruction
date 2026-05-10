@@ -1,0 +1,19 @@
+#!/bin/sh
+# Prevent pushing branch changes that enable unofficial scrapers or opt-ins
+PATTERN='HOMEDPOT_MODE\s*=\s*unofficial|ALLOW_UNOFFICIAL\s*=\s*true'
+if git rev-parse --verify --quiet HEAD >/dev/null; then
+  RANGE="HEAD..refs/heads/$(git rev-parse --abbrev-ref HEAD)"
+else
+  RANGE="refs/heads/$(git rev-parse --abbrev-ref HEAD)"
+fi
+FILES=$(git diff --name-only --diff-filter=ACM $RANGE 2>/dev/null || true)
+for f in $FILES; do
+  if [ -f "$f" ]; then
+    if grep -nE "$PATTERN" "$f" >/dev/null 2>&1; then
+      echo "ERROR: Pushing file $f which contains unofficial scrapers flags. Remove before pushing."
+      grep -nE "$PATTERN" "$f" || true
+      exit 1
+    fi
+  fi
+done
+exit 0

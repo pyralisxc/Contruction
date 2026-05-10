@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import { createSampleProject } from '../bim/sampleProject'
+import { Operation, createOpId } from '../bim/ops'
+import families from '../bim/families'
 import {
   EditorDragState,
   EditorToolId,
@@ -10,16 +12,19 @@ import {
   SelectionHandle,
   ToolSession,
   ViewportPanelMode,
+  WorkspaceMode,
   ModelDisplayMode,
 } from '../editor/types'
 import {
   BuildingElement,
+  SupplierProduct,
   CircuitElement,
   DuctElement,
   EditorMode,
   ElectricalDeviceElement,
   FloorElement,
   HouseAccessoryElement,
+  LevelModel,
   OpeningElement,
   PipeElement,
   PlumbingFixtureElement,
@@ -38,6 +43,7 @@ export interface BimProjectState {
   selectedId: string | null
   mode: EditorMode
   viewMode: ViewMode
+  workspaceMode: WorkspaceMode
   modelDisplayMode: ModelDisplayMode
   activeTool: EditorToolId
   toolSession: ToolSession | null
@@ -50,8 +56,29 @@ export interface BimProjectState {
   snapFeet: number
   past: ProjectDocument[]
   future: ProjectDocument[]
+  operations: Operation[]
+  operationsFuture: Operation[]
+  pushOperation: (op: Operation) => void
+  replayOperations: () => void
+  isReplayingOperations: boolean
+  exportOperations: () => string
+  importOperations: (json: string) => void
+  clearOperations: () => void
+  persistCheckpoint: () => void
+  loadCheckpointAndReplay: () => void
+  undoOperation: () => void
+  redoOperation: () => void
+  selectedStore: { id: string; name?: string; zipCode?: string } | null
+  setSelectedStore: (store: { id: string; name?: string; zipCode?: string } | null) => void
+  addSupplierProduct: (product: SupplierProduct) => void
+  cart: Array<{ product: SupplierProduct; quantity: number }>
+  addToCart: (product: SupplierProduct, quantity?: number) => void
+  removeFromCart: (sku: string) => void
+  updateCartItem: (sku: string, quantity: number) => void
+  clearCart: () => void
   setMode: (mode: EditorMode) => void
   setViewMode: (viewMode: ViewMode) => void
+  setWorkspaceMode: (workspaceMode: WorkspaceMode) => void
   setModelDisplayMode: (mode: ModelDisplayMode) => void
   setActiveTool: (toolId: EditorToolId) => void
   beginToolSession: (session: ToolSession) => void
@@ -72,6 +99,8 @@ export interface BimProjectState {
   setActiveLevel: (levelId: string) => void
   commitProject: (project: ProjectDocument) => void
   updateElement: (id: string, updates: Partial<BuildingElement>) => void
+  extrudeFace: (elementId: string, faceId: string, distance: number) => void
+  setElementPreview: (id: string, updates: Partial<BuildingElement>) => void
   removeElement: (id: string) => void
   updateTerrain: (updates: Partial<ProjectDocument['site']['terrain']>) => void
   updateTerrainPoint: (id: string, updates: Partial<TerrainPoint>) => void
@@ -102,9 +131,19 @@ export interface BimProjectState {
   createPlumbingFixtureAt: (point: Point2, kind?: PlumbingFixtureElement['fixtureKind']) => void
   createPipeAt: (points: Point2[], kind?: PipeElement['pipeKind']) => void
   createDuctAt: (points: Point2[]) => void
+  createFamilyInstance: (familyId: string, params?: Record<string, any>, origin?: Point2) => void
   updateFloorBounds: (id: string, width: number, depth: number) => void
   updateWallPath: (id: string, start: Point2, end: Point2) => void
   updateRoofFootprint: (id: string, width: number, depth: number) => void
+  updatePolygonVertex: (id: string, pointIndex: number, point: Point2) => void
+  movePolygonEdge: (id: string, edgeIndex: number, point: Point2) => void
+  splitPolygonEdge: (id: string, edgeIndex: number, point?: Point2) => void
+  deletePolygonVertex: (id: string, pointIndex: number) => void
+  cleanPolygonFootprint: (id: string) => void
+  syncExteriorWallsToFloorOutline: (floorId?: string) => void
+  syncRoofToFloorOutline: (floorId?: string) => void
+  createAttachedAddition: () => void
+  createAttachedAdditionOnTarget: (targetId: string, edgeIndex?: number, depth?: number) => void
   moveElement: (id: string, delta: ElementMoveDelta) => void
   resizeElementFromHandle: (id: string, handle: SelectionHandle, point: Point2) => void
   moveOpeningAlongWall: (id: string, center: number) => void
@@ -328,6 +367,192 @@ function boundsArea(points: Point2[]) {
   return (bounds.maxX - bounds.minX) * (bounds.maxY - bounds.minY)
 }
 
+function polygonCentroid(points: Point2[]): Point2 {
+  const total = points.reduce((acc, point) => ({
+    x: acc.x + point.x,
+    y: acc.y + point.y,
+  }), { x: 0, y: 0 })
+  return {
+    x: total.x / Math.max(points.length, 1),
+    y: total.y / Math.max(points.length, 1),
+  }
+}
+
+function edgeMidpoint(start: Point2, end: Point2): Point2 {
+  return {
+    x: (start.x + end.x) / 2,
+    y: (start.y + end.y) / 2,
+  }
+}
+
+function outwardNormal(points: Point2[], edgeIndex: number): Point2 {
+  const start = points[edgeIndex]
+  const end = points[(edgeIndex + 1) % points.length]
+  const dx = end.x - start.x
+  const dy = end.y - start.y
+  const length = Math.hypot(dx, dy) || 1
+  const candidateA = { x: dy / length, y: -dx / length }
+  const candidateB = { x: -dy / length, y: dx / length }
+  const midpoint = edgeMidpoint(start, end)
+  const toMidpoint = {
+    x: midpoint.x - polygonCentroid(points).x,
+    y: midpoint.y - polygonCentroid(points).y,
+  }
+  const dotA = candidateA.x * toMidpoint.x + candidateA.y * toMidpoint.y
+  const dotB = candidateB.x * toMidpoint.x + candidateB.y * toMidpoint.y
+  return dotA >= dotB ? candidateA : candidateB
+}
+
+function replacePolygonPoint(points: Point2[], pointIndex: number, point: Point2): Point2[] {
+  return points.map((candidate, index) => index === pointIndex ? point : candidate)
+}
+
+function projectPointOntoSegment(point: Point2, start: Point2, end: Point2): Point2 {
+  const dx = end.x - start.x
+  const dy = end.y - start.y
+  const lengthSquared = dx * dx + dy * dy
+  if (lengthSquared === 0) return start
+  const t = Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared))
+  return {
+    x: start.x + t * dx,
+    y: start.y + t * dy,
+  }
+}
+
+function splitPolygonEdgeAtPoint(points: Point2[], edgeIndex: number, point?: Point2): Point2[] {
+  if (points.length < 3) return points
+  const startIndex = ((edgeIndex % points.length) + points.length) % points.length
+  const endIndex = (startIndex + 1) % points.length
+  const start = points[startIndex]
+  const end = points[endIndex]
+  const inserted = point ? projectPointOntoSegment(point, start, end) : edgeMidpoint(start, end)
+  return [
+    ...points.slice(0, startIndex + 1),
+    inserted,
+    ...points.slice(endIndex),
+  ]
+}
+
+function removePolygonVertex(points: Point2[], pointIndex: number): Point2[] {
+  if (points.length <= 3) return points
+  return points.filter((_, index) => index !== pointIndex)
+}
+
+function cleanPolygonPoints(points: Point2[], tolerance = 0.125): Point2[] {
+  if (points.length <= 3) return points
+  const deduped: Point2[] = []
+  for (const point of points) {
+    const previous = deduped[deduped.length - 1]
+    if (!previous || Math.hypot(point.x - previous.x, point.y - previous.y) > tolerance) {
+      deduped.push(point)
+    }
+  }
+  if (deduped.length > 2) {
+    const first = deduped[0]
+    const last = deduped[deduped.length - 1]
+    if (Math.hypot(first.x - last.x, first.y - last.y) <= tolerance) deduped.pop()
+  }
+  const cleaned = deduped.filter((point, index, list) => {
+    if (list.length <= 3) return true
+    const previous = list[(index - 1 + list.length) % list.length]
+    const next = list[(index + 1) % list.length]
+    const dx1 = point.x - previous.x
+    const dy1 = point.y - previous.y
+    const dx2 = next.x - point.x
+    const dy2 = next.y - point.y
+    const cross = Math.abs(dx1 * dy2 - dy1 * dx2)
+    const length1 = Math.hypot(dx1, dy1)
+    const length2 = Math.hypot(dx2, dy2)
+    if (length1 <= tolerance || length2 <= tolerance) return false
+    return cross > tolerance * Math.max(length1, length2)
+  })
+  return cleaned.length >= 3 ? cleaned : points
+}
+
+function movePolygonEdgePoints(points: Point2[], edgeIndex: number, point: Point2): Point2[] {
+  if (points.length < 2) return points
+  const startIndex = ((edgeIndex % points.length) + points.length) % points.length
+  const endIndex = (startIndex + 1) % points.length
+  const start = points[startIndex]
+  const end = points[endIndex]
+  const midpoint = edgeMidpoint(start, end)
+  const normal = outwardNormal(points, startIndex)
+  const offset = (point.x - midpoint.x) * normal.x + (point.y - midpoint.y) * normal.y
+  const translated = {
+    x: normal.x * offset,
+    y: normal.y * offset,
+  }
+  return points.map((candidate, index) => {
+    if (index !== startIndex && index !== endIndex) return candidate
+    return {
+      x: candidate.x + translated.x,
+      y: candidate.y + translated.y,
+    }
+  })
+}
+
+function addAttachedBay(points: Point2[], edgeIndex: number, depth: number): Point2[] {
+  if (points.length < 3) return points
+  const startIndex = ((edgeIndex % points.length) + points.length) % points.length
+  const endIndex = (startIndex + 1) % points.length
+  const start = points[startIndex]
+  const end = points[endIndex]
+  const edgeLength = Math.hypot(end.x - start.x, end.y - start.y)
+  if (edgeLength < 1) return points
+  const insetRatio = edgeLength < 8 ? 0.2 : 0.25
+  const startInset = {
+    x: start.x + (end.x - start.x) * insetRatio,
+    y: start.y + (end.y - start.y) * insetRatio,
+  }
+  const endInset = {
+    x: start.x + (end.x - start.x) * (1 - insetRatio),
+    y: start.y + (end.y - start.y) * (1 - insetRatio),
+  }
+  const normal = outwardNormal(points, startIndex)
+  const pushedStart = {
+    x: startInset.x + normal.x * depth,
+    y: startInset.y + normal.y * depth,
+  }
+  const pushedEnd = {
+    x: endInset.x + normal.x * depth,
+    y: endInset.y + normal.y * depth,
+  }
+  return [
+    ...points.slice(0, startIndex + 1),
+    startInset,
+    pushedStart,
+    pushedEnd,
+    endInset,
+    ...points.slice(endIndex),
+  ]
+}
+
+function longestEdgeIndex(points: Point2[]): number {
+  let bestIndex = 0
+  let bestLength = 0
+  for (let index = 0; index < points.length; index += 1) {
+    const start = points[index]
+    const end = points[(index + 1) % points.length]
+    const length = Math.hypot(end.x - start.x, end.y - start.y)
+    if (length > bestLength) {
+      bestLength = length
+      bestIndex = index
+    }
+  }
+  return bestIndex
+}
+
+function edgeLength(points: Point2[], edgeIndex: number): number {
+  const start = points[edgeIndex]
+  const end = points[(edgeIndex + 1) % points.length]
+  return Math.hypot(end.x - start.x, end.y - start.y)
+}
+
+function clampedEdgeDepth(points: Point2[], edgeIndex: number, multiplier: number, minDepth: number, maxDepth: number, requestedDepth?: number): number {
+  if (Number.isFinite(requestedDepth) && (requestedDepth ?? 0) > 0) return requestedDepth as number
+  return Math.max(minDepth, Math.min(maxDepth, edgeLength(points, edgeIndex) * multiplier))
+}
+
 function distanceToSegment(point: Point2, start: Point2, end: Point2) {
   const dx = end.x - start.x
   const dy = end.y - start.y
@@ -335,6 +560,221 @@ function distanceToSegment(point: Point2, start: Point2, end: Point2) {
   if (lengthSquared === 0) return 0
   const t = Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared))
   return t * Math.sqrt(lengthSquared)
+}
+
+function pointToSegmentDistance(point: Point2, start: Point2, end: Point2) {
+  const projected = projectPointOntoSegment(point, start, end)
+  return Math.hypot(point.x - projected.x, point.y - projected.y)
+}
+
+function pointOnWallPath(path: [Point2, Point2], center: number): Point2 {
+  const length = Math.hypot(path[1].x - path[0].x, path[1].y - path[0].y)
+  const ratio = length === 0 ? 0 : center / length
+  return {
+    x: path[0].x + (path[1].x - path[0].x) * ratio,
+    y: path[0].y + (path[1].y - path[0].y) * ratio,
+  }
+}
+
+function edgePath(points: Point2[], edgeIndex: number): [Point2, Point2] {
+  return [points[edgeIndex], points[(edgeIndex + 1) % points.length]]
+}
+
+function wallMatchScore(wall: WallElement, path: [Point2, Point2]) {
+  const direct =
+    Math.hypot(wall.path[0].x - path[0].x, wall.path[0].y - path[0].y) +
+    Math.hypot(wall.path[1].x - path[1].x, wall.path[1].y - path[1].y)
+  const reversed =
+    Math.hypot(wall.path[0].x - path[1].x, wall.path[0].y - path[1].y) +
+    Math.hypot(wall.path[1].x - path[0].x, wall.path[1].y - path[0].y)
+  return Math.min(direct, reversed)
+}
+
+function defaultExteriorWallForPath(path: [Point2, Point2], levelId: string, levelHeight: number, template?: Partial<WallElement>, idOverride?: string): WallElement {
+  return {
+    id: idOverride ?? nextId('wall'),
+    type: 'wall',
+    name: template?.name ?? 'Exterior wall from floor outline',
+    levelId,
+    path,
+    height: template?.height ?? levelHeight,
+    assemblyId: template?.assemblyId ?? 'wall-ext-2x6',
+    bearing: template?.bearing ?? true,
+    exterior: true,
+    studSize: template?.studSize ?? '2x6',
+    studSpacing: template?.studSpacing ?? 16,
+    joinPriority: template?.joinPriority ?? 'miter',
+    wallKind: template?.wallKind ?? 'exterior',
+    cornerStyle: template?.cornerStyle ?? 'threeStud',
+    intersectionStyle: template?.intersectionStyle ?? 'teeBacking',
+    platePolicy: template?.platePolicy ?? 'doubleTop',
+    halfWallCap: template?.halfWallCap ?? false,
+    finishAssemblyId: template?.finishAssemblyId,
+  }
+}
+
+function roofFromFloorOutline(floor: FloorElement, level: LevelModel | undefined, template?: RoofElement): RoofElement {
+  return {
+    id: template?.id ?? nextId('roof'),
+    type: 'roof',
+    name: template?.name ?? `Roof over ${floor.name}`,
+    levelId: floor.levelId ?? level?.id ?? 'level-main',
+    footprint: floor.polygon.map((point) => ({ ...point })),
+    baseElevation: template?.baseElevation ?? ((level?.elevation ?? floor.elevation) + (level?.height ?? 9)),
+    roofType: template?.roofType ?? 'gable',
+    pitchRise: template?.pitchRise ?? 6,
+    pitchRun: template?.pitchRun ?? 12,
+    overhang: template?.overhang ?? 1,
+    rafterSize: template?.rafterSize ?? '2x8',
+    rafterSpacing: template?.rafterSpacing ?? 24,
+    assemblyId: template?.assemblyId ?? 'roof-asphalt-gable',
+    attachment: template?.attachment ?? 'freestanding',
+    ridgePolicy: template?.ridgePolicy ?? 'ridgeBoard',
+    purlinMode: template?.purlinMode ?? 'roofBattenNailer',
+    eaveOverhang: template?.eaveOverhang ?? template?.overhang ?? 1,
+    rakeOverhang: template?.rakeOverhang ?? template?.overhang ?? 1,
+    roofingMaterialId: template?.roofingMaterialId ?? 'asphalt-shingle',
+  }
+}
+
+export interface FloorDrivenUpdateSelection {
+  syncWalls: boolean
+  syncRoof: boolean
+  preserveOpenings: boolean
+}
+
+export function buildProjectWithExteriorWallsSynced(
+  project: ProjectDocument,
+  floorId: string,
+  activeLevelId: string,
+  options: { preserveOpenings: boolean } = { preserveOpenings: true },
+): ProjectDocument | null {
+  const targetFloor = project.elements.find((element): element is FloorElement =>
+    element.type === 'floor' && element.id === floorId,
+  )
+  if (!targetFloor || targetFloor.polygon.length < 3) return null
+  const floorLevelId = targetFloor.levelId ?? activeLevelId
+  const level = project.levels.find((candidate) => candidate.id === floorLevelId)
+  const existingWalls = project.elements.filter(
+    (element): element is WallElement => element.type === 'wall' && element.levelId === floorLevelId && element.exterior,
+  )
+  const openings = project.elements.filter(
+    (element): element is OpeningElement => element.type === 'opening' && existingWalls.some((wall) => wall.id === element.hostWallId),
+  )
+  const edgePaths = targetFloor.polygon.map((_, edgeIndex) => edgePath(targetFloor.polygon, edgeIndex))
+  const unusedWalls = [...existingWalls]
+  const rebuiltWalls = edgePaths.map((path, edgeIndex) => {
+    let bestIndex = -1
+    let bestScore = Number.POSITIVE_INFINITY
+    unusedWalls.forEach((wall, index) => {
+      const score = wallMatchScore(wall, path)
+      if (score < bestScore) {
+        bestScore = score
+        bestIndex = index
+      }
+    })
+    const matchedWall = bestIndex >= 0 ? unusedWalls.splice(bestIndex, 1)[0] : undefined
+    const template = matchedWall ?? existingWalls[edgeIndex] ?? existingWalls[0]
+    return defaultExteriorWallForPath(path, floorLevelId, level?.height ?? 9, template, matchedWall?.id)
+  })
+  const remappedOpenings = options.preserveOpenings
+    ? openings.flatMap((opening) => {
+      const oldWall = existingWalls.find((wall) => wall.id === opening.hostWallId)
+      if (!oldWall) return []
+      const worldPoint = pointOnWallPath(oldWall.path, opening.center)
+      let best: { wall: WallElement; distance: number } | null = null
+      for (const wall of rebuiltWalls) {
+        const distance = pointToSegmentDistance(worldPoint, wall.path[0], wall.path[1])
+        if (!best || distance < best.distance) best = { wall, distance }
+      }
+      if (!best || best.distance > 3) return []
+      return [{
+        ...opening,
+        hostWallId: best.wall.id,
+        center: clampOpeningCenter(distanceToSegment(worldPoint, best.wall.path[0], best.wall.path[1]), best.wall, opening.width),
+      }]
+    })
+    : []
+  return normalizeWallNetwork({
+    ...project,
+    elements: [
+      ...project.elements.filter((element) => {
+        if (element.type === 'wall' && element.levelId === floorLevelId && element.exterior) return false
+        if (element.type === 'opening' && existingWalls.some((wall) => wall.id === element.hostWallId)) return false
+        return true
+      }),
+      ...rebuiltWalls,
+      ...remappedOpenings,
+    ],
+  })
+}
+
+export function buildProjectWithRoofSynced(
+  project: ProjectDocument,
+  floorId: string,
+  activeLevelId: string,
+): ProjectDocument | null {
+  const targetFloor = project.elements.find((element): element is FloorElement =>
+    element.type === 'floor' && element.id === floorId,
+  )
+  if (!targetFloor || targetFloor.polygon.length < 3) return null
+  const floorLevelId = targetFloor.levelId ?? activeLevelId
+  const level = project.levels.find((candidate) => candidate.id === floorLevelId)
+  const roofsOnLevel = project.elements.filter(
+    (element): element is RoofElement => element.type === 'roof' && element.levelId === floorLevelId,
+  )
+  const primaryRoof = roofsOnLevel[0]
+  const syncedRoof = roofFromFloorOutline(targetFloor, level, primaryRoof)
+  return {
+    ...project,
+    elements: [
+      ...project.elements.filter((element) => !(element.type === 'roof' && element.levelId === floorLevelId && element.id !== syncedRoof.id) && element.id !== syncedRoof.id),
+      syncedRoof,
+    ],
+  }
+}
+
+export function buildProjectWithFloorDrivenUpdates(
+  project: ProjectDocument,
+  floorId: string,
+  activeLevelId: string,
+  selection: FloorDrivenUpdateSelection,
+): ProjectDocument | null {
+  let nextProject = project
+  if (selection.syncWalls) {
+    const withWalls = buildProjectWithExteriorWallsSynced(nextProject, floorId, activeLevelId, {
+      preserveOpenings: selection.preserveOpenings,
+    })
+    if (!withWalls) return null
+    nextProject = withWalls
+  }
+  if (selection.syncRoof) {
+    const withRoof = buildProjectWithRoofSynced(nextProject, floorId, activeLevelId)
+    if (!withRoof) return null
+    nextProject = withRoof
+  }
+  return nextProject
+}
+
+function wallLength(wall: WallElement): number {
+  return Math.hypot(wall.path[1].x - wall.path[0].x, wall.path[1].y - wall.path[0].y)
+}
+
+function clampOpeningCenter(center: number, wall: WallElement, width: number): number {
+  const length = wallLength(wall)
+  const half = Math.max(0.5, width / 2)
+  if (length <= half * 2) return length / 2
+  return Math.max(half, Math.min(length - half, center))
+}
+
+function clampOpeningBounds(left: number, right: number, wall: WallElement, minWidth = 1) {
+  const length = wallLength(wall)
+  const nextLeft = Math.max(0, Math.min(left, length - minWidth))
+  const nextRight = Math.min(length, Math.max(right, nextLeft + minWidth))
+  return {
+    center: (nextLeft + nextRight) / 2,
+    width: nextRight - nextLeft,
+  }
 }
 
 function pushHistory(state: BimProjectState, project: ProjectDocument) {
@@ -350,6 +790,7 @@ const useBimProjectStore = create<BimProjectState>((set, get) => ({
   selectedId: null,
   mode: 'structure',
   viewMode: 'framing',
+  workspaceMode: 'split',
   modelDisplayMode: 'framing',
   activeTool: 'select',
   toolSession: null,
@@ -362,9 +803,181 @@ const useBimProjectStore = create<BimProjectState>((set, get) => ({
   snapFeet: 0.5,
   past: [],
   future: [],
+  operations: (function() {
+    try {
+      if (typeof localStorage !== 'undefined') return JSON.parse(localStorage.getItem('bim_ops_v1') || '[]')
+    } catch (e) {}
+    return []
+  })(),
+  operationsFuture: [],
+  pushOperation: (op: Operation) => {
+    const state = get()
+    const nextOps = [...state.operations, op]
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('bim_ops_v1', JSON.stringify(nextOps))
+        // checkpoint every 10 ops to speed up replay
+        if (nextOps.length % 10 === 0) {
+          localStorage.setItem('bim_project_checkpoint_v1', JSON.stringify(state.project))
+          localStorage.setItem('bim_checkpoint_index_v1', String(nextOps.length))
+        }
+      }
+    } catch (e) {}
+    // adding a new op clears the redo buffer
+    set({ operations: nextOps, operationsFuture: [] })
+  },
+
+  createFamilyInstance: (familyId, params = undefined, origin = { x: 8, y: 8 }) => {
+    const state = get()
+    const registry: any = families
+    const def = registry[familyId] ?? registry.sampleFloorFamily
+    const p = params ?? def.defaultParams
+    const partial = def.instantiate(p, origin, state.project) as Partial<BuildingElement>
+    const id = nextId(def.id || 'family')
+    const element = { id, ...partial } as BuildingElement
+    set(pushHistory(state, { ...state.project, elements: [...state.project.elements, element] }))
+    set({ selectedId: id, mode: 'structure' })
+  },
+  replayOperations: () => {
+    // For compatibility, call loadCheckpointAndReplay which handles checkpoint index
+    get().loadCheckpointAndReplay()
+  },
+  isReplayingOperations: false,
+  exportOperations: () => {
+    try { return JSON.stringify(get().operations, null, 2) } catch (e) { return '[]' }
+  },
+  importOperations: (json) => {
+    try {
+      const parsed = JSON.parse(json)
+      if (!Array.isArray(parsed)) return
+      try { if (typeof localStorage !== 'undefined') localStorage.setItem('bim_ops_v1', JSON.stringify(parsed)) } catch (e) {}
+      set({ operations: parsed })
+      // replay to rebuild project
+      get().loadCheckpointAndReplay()
+    } catch (e) {
+      // ignore invalid JSON for prototype
+    }
+  },
+  clearOperations: () => {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem('bim_ops_v1')
+        localStorage.removeItem('bim_project_checkpoint_v1')
+        localStorage.removeItem('bim_checkpoint_index_v1')
+      }
+    } catch (e) {}
+    set({ operations: [] })
+  },
+  persistCheckpoint: () => {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('bim_project_checkpoint_v1', JSON.stringify(get().project))
+        localStorage.setItem('bim_checkpoint_index_v1', String(get().operations.length))
+      }
+    } catch (e) {}
+  },
+  loadCheckpointAndReplay: () => {
+    const ops: Operation[] = get().operations.slice()
+    // Prefer persisted checkpoint if available
+    let baseline: ProjectDocument = createSampleProject()
+    let checkpointIndex = 0
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const raw = localStorage.getItem('bim_project_checkpoint_v1')
+        const idx = localStorage.getItem('bim_checkpoint_index_v1')
+        if (raw) baseline = JSON.parse(raw)
+        if (idx) checkpointIndex = Number(idx) || 0
+      }
+    } catch (e) {}
+    set({ isReplayingOperations: true, project: baseline, past: [], future: [], selectedId: null })
+    for (let i = checkpointIndex; i < ops.length; i++) {
+      const op = ops[i]
+      try {
+        if (op.kind === 'createFloor') get().createFloorAt(op.params.start, op.params.end)
+        if (op.kind === 'createWall') get().createWallAt(op.params.start, op.params.end)
+        if (op.kind === 'createRoof') get().createRoofAt(op.params.start, op.params.end)
+        if (op.kind === 'createPipe') get().createPipeAt(op.params.points, op.params.kind as PipeElement['pipeKind'])
+        if (op.kind === 'createDuct') get().createDuctAt(op.params.points)
+        if (op.kind === 'updateElement') get().updateElement(op.params.elementId, op.params.updates)
+        if (op.kind === 'extrudeFace') get().extrudeFace(op.params.elementId, op.params.faceId, op.params.distance)
+      } catch (e) {
+        // ignore individual op failures during prototype replay
+      }
+    }
+    set({ isReplayingOperations: false })
+  },
+  // Replay a specific operations array deterministically from a fresh baseline (no checkpoint)
+  undoOperation: () => {
+    const state = get()
+    const ops = state.operations
+    if (!ops || ops.length === 0) return
+    const last = ops[ops.length - 1]
+    const nextOps = ops.slice(0, -1)
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('bim_ops_v1', JSON.stringify(nextOps))
+    } catch (e) {}
+    set({ operations: nextOps, operationsFuture: [last, ...state.operationsFuture] })
+    // replay from baseline
+    set({ isReplayingOperations: true, project: createSampleProject(), past: [], future: [], selectedId: null })
+    for (const op of nextOps) {
+      try {
+        if (op.kind === 'createFloor') get().createFloorAt(op.params.start, op.params.end)
+        if (op.kind === 'createWall') get().createWallAt(op.params.start, op.params.end)
+        if (op.kind === 'createRoof') get().createRoofAt(op.params.start, op.params.end)
+        if (op.kind === 'createPipe') get().createPipeAt(op.params.points, op.params.kind as PipeElement['pipeKind'])
+        if (op.kind === 'createDuct') get().createDuctAt(op.params.points)
+        if (op.kind === 'updateElement') get().updateElement(op.params.elementId, op.params.updates)
+        if (op.kind === 'extrudeFace') get().extrudeFace(op.params.elementId, op.params.faceId, op.params.distance)
+      } catch (e) {
+        // ignore per-op failures during replay
+      }
+    }
+    set({ isReplayingOperations: false })
+  },
+
+  redoOperation: () => {
+    const state = get()
+    const futureOps = state.operationsFuture
+    if (!futureOps || futureOps.length === 0) return
+    const next = futureOps[0]
+    const nextOps = [...state.operations, next]
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('bim_ops_v1', JSON.stringify(nextOps))
+    } catch (e) {}
+    set({ operations: nextOps, operationsFuture: futureOps.slice(1) })
+    // replay from baseline
+    set({ isReplayingOperations: true, project: createSampleProject(), past: [], future: [], selectedId: null })
+    for (const op of nextOps) {
+      try {
+        if (op.kind === 'createFloor') get().createFloorAt(op.params.start, op.params.end)
+        if (op.kind === 'createWall') get().createWallAt(op.params.start, op.params.end)
+        if (op.kind === 'createRoof') get().createRoofAt(op.params.start, op.params.end)
+        if (op.kind === 'createPipe') get().createPipeAt(op.params.points, op.params.kind as PipeElement['pipeKind'])
+        if (op.kind === 'createDuct') get().createDuctAt(op.params.points)
+        if (op.kind === 'updateElement') get().updateElement(op.params.elementId, op.params.updates)
+        if (op.kind === 'extrudeFace') get().extrudeFace(op.params.elementId, op.params.faceId, op.params.distance)
+      } catch (e) {
+        // ignore per-op failures during replay
+      }
+    }
+    set({ isReplayingOperations: false })
+  },
+  selectedStore: null,
+  cart: (function() {
+    try {
+      if (typeof localStorage !== 'undefined') return JSON.parse(localStorage.getItem('bim_cart') || '[]')
+    } catch (e) {}
+    return []
+  })(),
 
   setMode: (mode) => set({ mode, activeTool: 'select', toolSession: null }),
   setViewMode: (viewMode) => set({ viewMode }),
+  setWorkspaceMode: (workspaceMode) => set(() => {
+    if (workspaceMode === 'sheets') return { workspaceMode, viewMode: 'blueprint' }
+    if (workspaceMode === 'materials') return { workspaceMode, viewMode: 'takeoff' }
+    if (workspaceMode === 'code') return { workspaceMode, viewMode: 'code', viewportPanel: '3d' }
+    return { workspaceMode, viewMode: 'framing', viewportPanel: '3d' }
+  }),
   setModelDisplayMode: (modelDisplayMode) => set({ modelDisplayMode, viewMode: modelDisplayMode === 'framing' ? 'framing' : 'architectural' }),
   setActiveTool: (toolId) => set({ activeTool: toolId, toolSession: null }),
   beginToolSession: (session) => set({ toolSession: session }),
@@ -375,11 +988,31 @@ const useBimProjectStore = create<BimProjectState>((set, get) => ({
     if (!session) return
     const start = session.start ?? session.points[0]
     const current = session.current ?? session.points[session.points.length - 1]
-    if (session.toolId === 'drawFloor' && start && current) get().createFloorAt(start, current)
-    if (session.toolId === 'drawWall' && start && current) get().createWallAt(start, current)
-    if (session.toolId === 'drawRoof' && start && current) get().createRoofAt(start, current)
-    if (session.toolId === 'drawPipe' && session.points.length >= 2) get().createPipeAt(session.points, session.elementKind as PipeElement['pipeKind'])
-    if (session.toolId === 'drawDuct' && session.points.length >= 2) get().createDuctAt(session.points)
+    if (session.toolId === 'drawFloor' && start && current) {
+      get().createFloorAt(start, current)
+      if (!get().isReplayingOperations) get().pushOperation({ id: nextId('op'), kind: 'createFloor', params: { start, end: current } })
+    }
+    if (session.toolId === 'pushPull' && start && current) {
+      // Prototype push/pull uses a rectangle drag to create a floor (extrude)
+      get().createFloorAt(start, current)
+      if (!get().isReplayingOperations) get().pushOperation({ id: nextId('op'), kind: 'createFloor', params: { start, end: current } })
+    }
+    if (session.toolId === 'drawWall' && start && current) {
+      get().createWallAt(start, current)
+      if (!get().isReplayingOperations) get().pushOperation({ id: nextId('op'), kind: 'createWall', params: { start, end: current } })
+    }
+    if (session.toolId === 'drawRoof' && start && current) {
+      get().createRoofAt(start, current)
+      if (!get().isReplayingOperations) get().pushOperation({ id: nextId('op'), kind: 'createRoof', params: { start, end: current } })
+    }
+    if (session.toolId === 'drawPipe' && session.points.length >= 2) {
+      get().createPipeAt(session.points, session.elementKind as PipeElement['pipeKind'])
+      if (!get().isReplayingOperations) get().pushOperation({ id: nextId('op'), kind: 'createPipe', params: { points: session.points, kind: session.elementKind } })
+    }
+    if (session.toolId === 'drawDuct' && session.points.length >= 2) {
+      get().createDuctAt(session.points)
+      if (!get().isReplayingOperations) get().pushOperation({ id: nextId('op'), kind: 'createDuct', params: { points: session.points } })
+    }
     set({ toolSession: null, activeTool: 'select' })
   },
   cancelToolSession: () => set({ toolSession: null, activeTool: 'select', dragState: null }),
@@ -476,6 +1109,42 @@ const useBimProjectStore = create<BimProjectState>((set, get) => ({
   setSnapFeet: (snapFeet) => set({ snapFeet }),
   setActiveLevel: (levelId) => set({ activeLevelId: levelId }),
 
+  setSelectedStore: (store) => set({ selectedStore: store }),
+
+  addToCart: (product, quantity = 1) => {
+    const state = get()
+    const existing = state.cart.find((item) => item.product.sku === product.sku)
+    let nextCart
+    if (existing) {
+      nextCart = state.cart.map((item) => (item.product.sku === product.sku ? { ...item, quantity: item.quantity + quantity } : item))
+    } else {
+      nextCart = [...state.cart, { product, quantity }]
+    }
+    try {
+      localStorage.setItem('bim_cart', JSON.stringify(nextCart))
+    } catch (e) {}
+    set({ cart: nextCart })
+  },
+
+  removeFromCart: (sku) => {
+    const state = get()
+    const nextCart = state.cart.filter((item) => item.product.sku !== sku)
+    try { localStorage.setItem('bim_cart', JSON.stringify(nextCart)) } catch (e) {}
+    set({ cart: nextCart })
+  },
+
+  updateCartItem: (sku, quantity) => {
+    const state = get()
+    const nextCart = state.cart.map((item) => (item.product.sku === sku ? { ...item, quantity } : item)).filter((i) => i.quantity > 0)
+    try { localStorage.setItem('bim_cart', JSON.stringify(nextCart)) } catch (e) {}
+    set({ cart: nextCart })
+  },
+
+  clearCart: () => {
+    try { localStorage.removeItem('bim_cart') } catch (e) {}
+    set({ cart: [] })
+  },
+
   commitProject: (project) => set((state) => pushHistory(state, project)),
 
   updateElement: (id, updates) => {
@@ -485,6 +1154,59 @@ const useBimProjectStore = create<BimProjectState>((set, get) => ({
       elements: state.project.elements.map((element) =>
         element.id === id ? ({ ...element, ...updates } as BuildingElement) : element,
       ),
+    }
+    set(pushHistory(state, project))
+    try {
+      if (!get().isReplayingOperations) {
+        get().pushOperation({ id: createOpId('op'), kind: 'updateElement', params: { elementId: id, updates } })
+      }
+    } catch (e) {}
+  },
+
+  extrudeFace: (elementId, faceId, distance) => {
+    const state = get()
+    const element = state.project.elements.find((e) => e.id === elementId)
+    if (!element) return
+    if (element.type === 'wall') {
+      const newHeight = Math.max(0.5, (element.height ?? 9) + distance)
+      const project = {
+        ...state.project,
+        elements: state.project.elements.map((e) => (e.id === elementId ? ({ ...e, height: newHeight } as BuildingElement) : e)),
+      }
+      set(pushHistory(state, project))
+    } else if (element.type === 'floor') {
+      const newElevation = (element.elevation ?? 0) + distance
+      const project = {
+        ...state.project,
+        elements: state.project.elements.map((e) => (e.id === elementId ? ({ ...e, elevation: newElevation } as BuildingElement) : e)),
+      }
+      set(pushHistory(state, project))
+    } else {
+      return
+    }
+    try {
+      if (!get().isReplayingOperations) {
+        get().pushOperation({ id: nextId('op'), kind: 'extrudeFace', params: { elementId, faceId, distance } as any })
+      }
+    } catch (e) {}
+  },
+
+  setElementPreview: (id, updates) => {
+    set((state) => {
+      const project = {
+        ...state.project,
+        elements: state.project.elements.map((element) => (element.id === id ? ({ ...element, ...updates } as BuildingElement) : element)),
+      }
+      return { project }
+    })
+  },
+
+  addSupplierProduct: (product) => {
+    const state = get()
+    const existing = state.project.suppliers.products.filter((p) => p.sku !== product.sku)
+    const project = {
+      ...state.project,
+      suppliers: { ...state.project.suppliers, products: [...existing, product] },
     }
     set(pushHistory(state, project))
   },
@@ -825,7 +1547,7 @@ const useBimProjectStore = create<BimProjectState>((set, get) => ({
       dfu: kind === 'toilet' ? 3 : 2,
     }
     set(pushHistory(state, { ...state.project, elements: [...state.project.elements, fixture] }))
-    set({ selectedId: id, mode: 'electrical' })
+    set({ selectedId: id, mode: 'plumbing' })
   },
 
   addPipe: (kind = 'drain') => {
@@ -846,7 +1568,7 @@ const useBimProjectStore = create<BimProjectState>((set, get) => ({
       ],
     }
     set(pushHistory(state, { ...state.project, elements: [...state.project.elements, pipe] }))
-    set({ selectedId: id, mode: 'electrical' })
+    set({ selectedId: id, mode: 'plumbing' })
   },
 
   addDuct: () => {
@@ -865,7 +1587,7 @@ const useBimProjectStore = create<BimProjectState>((set, get) => ({
       ],
     }
     set(pushHistory(state, { ...state.project, elements: [...state.project.elements, duct] }))
-    set({ selectedId: id, mode: 'electrical' })
+    set({ selectedId: id, mode: 'hvac' })
   },
 
   createFloorAt: (start, end) => {
@@ -1074,7 +1796,7 @@ const useBimProjectStore = create<BimProjectState>((set, get) => ({
       levelId: state.activeLevelId,
       hostWallId: wallId,
       openingKind: kind,
-      center: distanceToSegment(point, wall.path[0], wall.path[1]),
+      center: clampOpeningCenter(distanceToSegment(point, wall.path[0], wall.path[1]), wall, kind === 'door' ? 3 : 4),
       width: kind === 'door' ? 3 : 4,
       height: kind === 'door' ? 6.8 : 4,
       sillHeight: kind === 'door' ? 0 : 3,
@@ -1116,7 +1838,7 @@ const useBimProjectStore = create<BimProjectState>((set, get) => ({
       dfu: kind === 'toilet' ? 3 : 2,
     }
     set(pushHistory(state, { ...state.project, elements: [...state.project.elements, fixture] }))
-    set({ selectedId: id, mode: 'electrical' })
+    set({ selectedId: id, mode: 'plumbing' })
   },
 
   createPipeAt: (points, kind = 'drain') => {
@@ -1134,7 +1856,7 @@ const useBimProjectStore = create<BimProjectState>((set, get) => ({
       path: points.map((point, index) => ({ ...point, z: kind === 'drain' ? 2.4 - index * 0.08 : 2.4 })),
     }
     set(pushHistory(state, { ...state.project, elements: [...state.project.elements, pipe] }))
-    set({ selectedId: id, mode: 'electrical' })
+    set({ selectedId: id, mode: 'plumbing' })
   },
 
   createDuctAt: (points) => {
@@ -1150,7 +1872,7 @@ const useBimProjectStore = create<BimProjectState>((set, get) => ({
       path: points.map((point) => ({ ...point, z: 8.5 })),
     }
     set(pushHistory(state, { ...state.project, elements: [...state.project.elements, duct] }))
-    set({ selectedId: id, mode: 'electrical' })
+    set({ selectedId: id, mode: 'hvac' })
   },
 
   updateFloorBounds: (id, width, depth) => {
@@ -1198,6 +1920,170 @@ const useBimProjectStore = create<BimProjectState>((set, get) => ({
     } as Partial<RoofElement>)
   },
 
+  updatePolygonVertex: (id, pointIndex, point) => {
+    const state = get()
+    const element = state.project.elements.find((candidate) => candidate.id === id)
+    if (!element) return
+    if (element.type === 'floor' && pointIndex >= 0 && pointIndex < element.polygon.length) {
+      get().updateElement(id, { polygon: replacePolygonPoint(element.polygon, pointIndex, point) } as Partial<FloorElement>)
+      return
+    }
+    if (element.type === 'roof' && pointIndex >= 0 && pointIndex < element.footprint.length) {
+      get().updateElement(id, { footprint: replacePolygonPoint(element.footprint, pointIndex, point) } as Partial<RoofElement>)
+    }
+  },
+
+  movePolygonEdge: (id, edgeIndex, point) => {
+    const state = get()
+    const element = state.project.elements.find((candidate) => candidate.id === id)
+    if (!element) return
+    if (element.type === 'floor' && element.polygon.length >= 3) {
+      get().updateElement(id, { polygon: movePolygonEdgePoints(element.polygon, edgeIndex, point) } as Partial<FloorElement>)
+      return
+    }
+    if (element.type === 'roof' && element.footprint.length >= 3) {
+      get().updateElement(id, { footprint: movePolygonEdgePoints(element.footprint, edgeIndex, point) } as Partial<RoofElement>)
+    }
+  },
+
+  splitPolygonEdge: (id, edgeIndex, point) => {
+    const state = get()
+    const element = state.project.elements.find((candidate) => candidate.id === id)
+    if (!element) return
+    if (element.type === 'floor' && element.polygon.length >= 3) {
+      get().updateElement(id, { polygon: splitPolygonEdgeAtPoint(element.polygon, edgeIndex, point) } as Partial<FloorElement>)
+      return
+    }
+    if (element.type === 'roof' && element.footprint.length >= 3) {
+      get().updateElement(id, { footprint: splitPolygonEdgeAtPoint(element.footprint, edgeIndex, point) } as Partial<RoofElement>)
+    }
+  },
+
+  deletePolygonVertex: (id, pointIndex) => {
+    const state = get()
+    const element = state.project.elements.find((candidate) => candidate.id === id)
+    if (!element) return
+    if (element.type === 'floor' && element.polygon.length > 3) {
+      get().updateElement(id, { polygon: removePolygonVertex(element.polygon, pointIndex) } as Partial<FloorElement>)
+      return
+    }
+    if (element.type === 'roof' && element.footprint.length > 3) {
+      get().updateElement(id, { footprint: removePolygonVertex(element.footprint, pointIndex) } as Partial<RoofElement>)
+    }
+  },
+
+  cleanPolygonFootprint: (id) => {
+    const state = get()
+    const element = state.project.elements.find((candidate) => candidate.id === id)
+    if (!element) return
+    if (element.type === 'floor') {
+      get().updateElement(id, { polygon: cleanPolygonPoints(element.polygon) } as Partial<FloorElement>)
+      return
+    }
+    if (element.type === 'roof') {
+      get().updateElement(id, { footprint: cleanPolygonPoints(element.footprint) } as Partial<RoofElement>)
+    }
+  },
+
+  syncExteriorWallsToFloorOutline: (floorId) => {
+    const state = get()
+    const resolvedFloorId = floorId ?? state.selectedId
+    if (!resolvedFloorId) return
+    const project = buildProjectWithExteriorWallsSynced(state.project, resolvedFloorId, state.activeLevelId, {
+      preserveOpenings: true,
+    })
+    if (!project) return
+    set(pushHistory(state, project))
+    set({ selectedId: resolvedFloorId, mode: 'structure' })
+  },
+
+  syncRoofToFloorOutline: (floorId) => {
+    const state = get()
+    const resolvedFloorId = floorId ?? state.selectedId
+    if (!resolvedFloorId) return
+    const project = buildProjectWithRoofSynced(state.project, resolvedFloorId, state.activeLevelId)
+    if (!project) return
+    set(pushHistory(state, project))
+    set({ selectedId: resolvedFloorId, mode: 'structure' })
+  },
+
+  createAttachedAddition: () => {
+    const state = get()
+    const selected = state.project.elements.find((element) => element.id === state.selectedId)
+    if (!selected) return
+    get().createAttachedAdditionOnTarget(selected.id)
+  },
+
+  createAttachedAdditionOnTarget: (targetId, edgeIndex, depth) => {
+    const state = get()
+    const selected = state.project.elements.find((element) => element.id === targetId)
+    if (!selected) return
+    if (selected.type === 'floor') {
+      const targetEdgeIndex = edgeIndex ?? longestEdgeIndex(selected.polygon)
+      const targetDepth = clampedEdgeDepth(selected.polygon, targetEdgeIndex, 0.45, 6, 12, depth)
+      get().updateElement(selected.id, { polygon: addAttachedBay(selected.polygon, targetEdgeIndex, targetDepth) } as Partial<FloorElement>)
+      return
+    }
+    if (selected.type === 'roof') {
+      const targetEdgeIndex = edgeIndex ?? longestEdgeIndex(selected.footprint)
+      const targetDepth = clampedEdgeDepth(selected.footprint, targetEdgeIndex, 0.35, 4, 10, depth)
+      get().updateElement(selected.id, { footprint: addAttachedBay(selected.footprint, targetEdgeIndex, targetDepth) } as Partial<RoofElement>)
+      return
+    }
+    if (selected.type === 'wall') {
+      const stateLevel = state.project.levels.find((level) => level.id === selected.levelId)
+      const start = selected.path[0]
+      const end = selected.path[1]
+      const levelPoints = state.project.elements
+        .filter((element) => element.levelId === selected.levelId)
+        .flatMap((element) => {
+          if (element.type === 'floor') return element.polygon
+          if (element.type === 'roof') return element.footprint
+          if (element.type === 'wall') return element.path
+          return []
+        })
+      const centroid = levelPoints.length > 0 ? polygonCentroid(levelPoints) : edgeMidpoint(start, end)
+      const dx = end.x - start.x
+      const dy = end.y - start.y
+      const length = Math.hypot(dx, dy) || 1
+      const normalA = { x: dy / length, y: -dx / length }
+      const normalB = { x: -dy / length, y: dx / length }
+      const midpoint = edgeMidpoint(start, end)
+      const toMidpoint = { x: midpoint.x - centroid.x, y: midpoint.y - centroid.y }
+      const normal = normalA.x * toMidpoint.x + normalA.y * toMidpoint.y >= normalB.x * toMidpoint.x + normalB.y * toMidpoint.y ? normalA : normalB
+      const targetDepth = Number.isFinite(depth) && (depth ?? 0) > 0 ? depth as number : 8
+      const footprint = [
+        start,
+        end,
+        { x: end.x + normal.x * targetDepth, y: end.y + normal.y * targetDepth },
+        { x: start.x + normal.x * targetDepth, y: start.y + normal.y * targetDepth },
+      ]
+      const id = nextId('floor')
+      const floor: FloorElement = {
+        id,
+        type: 'floor',
+        name: `Attached addition at ${selected.name}`,
+        levelId: selected.levelId,
+        polygon: footprint,
+        elevation: stateLevel?.elevation ?? 3,
+        assemblyId: 'floor-2x10',
+        joistDirection: Math.abs(end.x - start.x) >= Math.abs(end.y - start.y) ? 'y' : 'x',
+        joistSize: '2x10',
+        joistSpacing: 16,
+        beamSpacing: 8,
+        pierSpacing: 6,
+        framingMode: 'raisedFloor',
+        deckMode: 'none',
+        blockingPolicy: 'supportAndMidspan',
+        beamLayout: 'edgeAndInterior',
+        postLayout: 'underBeams',
+        surfaceMaterialId: 'subfloor-3-4',
+      }
+      set(pushHistory(state, { ...state.project, elements: [...state.project.elements, floor] }))
+      set({ selectedId: id, mode: 'structure' })
+    }
+  },
+
   moveElement: (id, delta) => {
     const state = get()
     const project = {
@@ -1223,6 +2109,14 @@ const useBimProjectStore = create<BimProjectState>((set, get) => ({
     const state = get()
     const element = state.project.elements.find((candidate) => candidate.id === id)
     if (!element) return
+    if (element.type === 'floor' && handle.startsWith('floor-vertex-')) {
+      get().updatePolygonVertex(id, Number(handle.replace('floor-vertex-', '')), point)
+      return
+    }
+    if (element.type === 'floor' && handle.startsWith('floor-edge-')) {
+      get().movePolygonEdge(id, Number(handle.replace('floor-edge-', '')), point)
+      return
+    }
     if (element.type === 'floor' && handle.startsWith('floor-')) {
       const bounds = boundsFromPolygon(element.polygon)
       const fixed = {
@@ -1230,6 +2124,14 @@ const useBimProjectStore = create<BimProjectState>((set, get) => ({
         y: handle.includes('n') ? bounds.maxY : bounds.minY,
       }
       get().updateElement(id, { polygon: rectFromPoints(fixed, point) } as Partial<FloorElement>)
+      return
+    }
+    if (element.type === 'roof' && handle.startsWith('roof-vertex-')) {
+      get().updatePolygonVertex(id, Number(handle.replace('roof-vertex-', '')), point)
+      return
+    }
+    if (element.type === 'roof' && handle.startsWith('roof-edge-')) {
+      get().movePolygonEdge(id, Number(handle.replace('roof-edge-', '')), point)
       return
     }
     if (element.type === 'roof' && handle.startsWith('roof-')) {
@@ -1251,13 +2153,23 @@ const useBimProjectStore = create<BimProjectState>((set, get) => ({
       if (!wall) return
       const center = distanceToSegment(point, wall.path[0], wall.path[1])
       if (handle === 'opening-center') get().moveOpeningAlongWall(id, center)
-      if (handle === 'opening-left') get().updateElement(id, { center: Math.max(center + element.width / 2, 0), width: Math.max((element.center + element.width / 2) - center, 1) } as Partial<OpeningElement>)
-      if (handle === 'opening-right') get().updateElement(id, { width: Math.max(center - (element.center - element.width / 2), 1) } as Partial<OpeningElement>)
+      if (handle === 'opening-left') {
+        const next = clampOpeningBounds(center, element.center + element.width / 2, wall)
+        get().updateElement(id, next as Partial<OpeningElement>)
+      }
+      if (handle === 'opening-right') {
+        const next = clampOpeningBounds(element.center - element.width / 2, center, wall)
+        get().updateElement(id, next as Partial<OpeningElement>)
+      }
     }
   },
 
   moveOpeningAlongWall: (id, center) => {
-    get().updateElement(id, { center: Math.max(0, center) } as Partial<OpeningElement>)
+    const state = get()
+    const opening = state.project.elements.find((candidate): candidate is OpeningElement => candidate.id === id && candidate.type === 'opening')
+    const wall = opening ? state.project.elements.find((candidate): candidate is WallElement => candidate.id === opening.hostWallId && candidate.type === 'wall') : undefined
+    if (!opening || !wall) return
+    get().updateElement(id, { center: clampOpeningCenter(center, wall, opening.width) } as Partial<OpeningElement>)
   },
 
   updatePathPoint: (id, pointIndex, point) => {

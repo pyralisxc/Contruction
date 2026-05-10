@@ -5,15 +5,19 @@ export function projectToJson(project: ProjectDocument): string {
 }
 
 export function takeoffToCsv(takeoff: TakeoffSummary, project: ProjectDocument): string {
-  const header = ['Subsystem', 'Phase', 'Location', 'Material', 'Description', 'Quantity', 'Unit', 'Waste Factor']
+  const header = ['Subsystem', 'Phase', 'Location', 'Material', 'Description', 'Design Quantity', 'Design Unit', 'Waste Quantity', 'Purchase Quantity', 'Purchase Unit', 'Source Type', 'Waste Factor']
   const rows = takeoff.lines.map((line) => [
     line.subsystem,
     line.phase,
     line.location,
     project.materials[line.materialId]?.name ?? line.materialId,
     line.description,
-    line.quantity.toFixed(2),
+    (line.designQuantity ?? line.quantity).toFixed(2),
     line.unit,
+    (line.wasteQuantity ?? line.quantity * line.wasteFactor).toFixed(2),
+    (line.purchaseQuantity ?? line.quantity).toFixed(2),
+    line.purchaseUnit ?? line.unit,
+    line.sourceType ?? '',
     `${Math.round(line.wasteFactor * 100)}%`,
   ])
 
@@ -55,8 +59,8 @@ export function blueprintHtml(project: ProjectDocument, takeoff: TakeoffSummary)
   <section class="sheet">
     <h2>Material Schedule</h2>
     <table>
-      <tr><th>Subsystem</th><th>Location</th><th>Description</th><th>Qty</th><th>Unit</th></tr>
-      ${takeoff.lines.map((line) => `<tr><td>${line.subsystem}</td><td>${line.location}</td><td>${line.description}</td><td>${line.quantity.toFixed(2)}</td><td>${line.unit}</td></tr>`).join('')}
+      <tr><th>Subsystem</th><th>Location</th><th>Description</th><th>Design Qty</th><th>Purchase Qty</th><th>Unit</th></tr>
+      ${takeoff.lines.map((line) => `<tr><td>${line.subsystem}</td><td>${line.location}</td><td>${line.description}</td><td>${(line.designQuantity ?? line.quantity).toFixed(2)}</td><td>${(line.purchaseQuantity ?? line.quantity).toFixed(2)}</td><td>${line.purchaseUnit ?? line.unit}</td></tr>`).join('')}
     </table>
   </section>
 </body>

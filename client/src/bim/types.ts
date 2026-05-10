@@ -189,7 +189,7 @@ export interface RoofElement extends BaseElement {
   type: 'roof'
   footprint: Point2[]
   baseElevation: number
-  roofType: 'gable' | 'hip' | 'shed' | 'flat'
+  roofType: RoofType
   pitchRise: number
   pitchRun: number
   overhang: number
@@ -207,6 +207,20 @@ export interface RoofElement extends BaseElement {
 export type FloorEdgeCondition = 'north' | 'south' | 'east' | 'west'
 export type WallCornerStyle = 'threeStud' | 'california' | 'miter' | 'butt'
 export type WallIntersectionStyle = 'teeBacking' | 'ladderBlocking' | 'none'
+export type RoofType =
+  | 'gable'
+  | 'shed'
+  | 'leanTo'
+  | 'hip'
+  | 'crossGable'
+  | 'valley'
+  | 'dormer'
+  | 'porch'
+  | 'roofOverDeck'
+  | 'flat'
+  | 'lowSlope'
+  | 'gambrel'
+  | 'mansard'
 export type RoofAttachmentCondition = 'freestanding' | 'wallAttachedShed' | 'overDeck' | 'overPorch'
 export type PurlinMode = 'none' | 'roofBattenNailer' | 'structuralPurlinWithStruts'
 export type DeckMode = 'none' | 'freestanding' | 'ledger' | 'porch'
@@ -486,11 +500,115 @@ export interface PierBlockDerived {
 export interface RoofPlaneDerived {
   id: string
   sourceElementId: string
-  kind: 'left' | 'right' | 'single' | 'hip' | 'gable'
+  kind:
+    | 'left'
+    | 'right'
+    | 'single'
+    | 'hip'
+    | 'gable'
+    | 'front'
+    | 'back'
+    | 'valley'
+    | 'dormer'
+    | 'porch'
+    | 'deck'
+    | 'flat'
+    | 'lowSlope'
+    | 'gambrelLower'
+    | 'gambrelUpper'
+    | 'mansardLower'
+    | 'mansardUpper'
   polygon: Point3[]
   area: number
   materialId?: string
   finishMaterialId?: string
+}
+
+export interface RoofFramingRunDerived {
+  id: string
+  sourceElementId: string
+  kind:
+    | 'ridge'
+    | 'hip'
+    | 'valley'
+    | 'commonRafter'
+    | 'jackRafter'
+    | 'dormerRafter'
+    | 'porchRafter'
+    | 'roofOverDeckRafter'
+    | 'purlin'
+    | 'fascia'
+    | 'rake'
+  start: Point3
+  end: Point3
+  roofPlaneIds?: string[]
+  materialId?: string
+}
+
+export interface RoofTopologyDerived {
+  id: string
+  sourceElementId: string
+  roofType: RoofType
+  planeIds: string[]
+  ridges: RoofFramingRunDerived[]
+  hips: RoofFramingRunDerived[]
+  valleys: RoofFramingRunDerived[]
+  rafters: RoofFramingRunDerived[]
+  jacks: RoofFramingRunDerived[]
+  purlins: RoofFramingRunDerived[]
+  trim: RoofFramingRunDerived[]
+  warnings: string[]
+}
+
+export interface WallOpeningDerived {
+  openingId: string
+  openingKind: OpeningElement['openingKind']
+  centerOffset: number
+  startOffset: number
+  endOffset: number
+  sillHeight: number
+  headHeight: number
+  width: number
+  height: number
+}
+
+export interface WallLayerBandDerived {
+  layerIndex: number
+  layerRole: AssemblyLayerRole
+  materialId: string
+  side: AssemblyLayerSide
+  startOffset: number
+  endOffset: number
+}
+
+export interface DerivedFace {
+  id: string
+  sourceElementId: string
+  kind: string
+  polygon: Point3[]
+  normal: Point3
+  center: Point3
+}
+
+export interface WallSolidDerived {
+  id: string
+  sourceElementId: string
+  assemblyId: string
+  start: Point3
+  end: Point3
+  center: Point3
+  length: number
+  height: number
+  thickness: number
+  baseElevation: number
+  insideFace: Point3[]
+  outsideFace: Point3[]
+  lengthAxis: Point3
+  thicknessAxis: Point3
+  upAxis: Point3
+  openingVoids: WallOpeningDerived[]
+  layerBands: WallLayerBandDerived[]
+  faces?: DerivedFace[]
 }
 
 export interface TerrainMesh {
@@ -544,6 +662,8 @@ export interface DerivedModel {
   framingRenderables: FramingRenderable[]
   pierBlocks: PierBlockDerived[]
   roofPlanes: RoofPlaneDerived[]
+  roofTopologies: RoofTopologyDerived[]
+  wallSolids: WallSolidDerived[]
   envelopeSurfaces: EnvelopeSurface[]
   layerTakeoffFragments: LayerTakeoffFragment[]
   supportGrids: SupportGrid[]
@@ -552,6 +672,7 @@ export interface DerivedModel {
   unresolvedIntersections: MemberJoinCondition[]
   pierHeights: Record<string, number>
   clashes: RuleResult[]
+  derivedFaces: DerivedFace[]
 }
 
 export interface RuleReference {
@@ -587,6 +708,16 @@ export interface TakeoffLine {
   quantity: number
   unit: MaterialSpec['unit']
   wasteFactor: number
+  designQuantity?: number
+  purchaseQuantity?: number
+  purchaseUnit?: MaterialSpec['unit'] | 'sheet' | 'bundle' | 'board'
+  wasteQuantity?: number
+  sourceType?: 'framingMember' | 'assemblyLayer' | 'roofPlane' | 'pierBlock' | 'mep' | 'accessory' | 'connector' | 'fastener'
+  levelId?: string
+  phaseGroup?: 'global' | 'project' | 'level' | 'room' | 'element' | 'wall' | 'roofPlane' | 'floorArea'
+  spaceId?: string
+  roofPlaneId?: string
+  supplierSnapshotId?: string
 }
 
 export interface TakeoffSummary {

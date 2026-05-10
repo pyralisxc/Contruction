@@ -33,10 +33,10 @@ Current rebuild stance: when an old component or derivation path conflicts with 
 - Zustand state in `client/src/stores/bimProjectStore.ts`.
 - BIM-lite schema and computational modules in `client/src/bim`.
 - Professional editor modules in `client/src/editor`:
-  - shell: mode rail, top bar, status bar, layout.
-  - canvas: 2D plan, 3D viewport, diagram, selection handles.
+  - shell: studio command bar, consolidated mode rail, status bar, adaptive layout, feature-stub notices.
+  - canvas: 2D plan, 3D viewport, diagram, real 2D/3D/Split workspace composition, selection handles.
   - tools: mode-specific tool panels and project browser.
-  - inspector: placement, dimensions, assembly, derived, materials, code.
+  - inspector: single right dock with Properties, Assembly, Derived, Materials, and Code tabs.
 
 ### Backend
 
@@ -57,6 +57,17 @@ Current derived outputs include:
 - pier heights.
 - rule results and clash candidates.
 - takeoff rows.
+
+Recent fidelity improvements:
+
+- 3D floors now render from the actual floor polygon instead of a rectangular bounding box, so L-shaped additions and other orthogonal non-rectangular footprints display honestly.
+- Bearing-wall load-path checks sample the real floor polygon instead of trusting the floor bounds.
+- Hosted openings are clamped during placement and resizing so editor interactions preserve wall ownership before validation runs.
+- Wall solids now derive from assembly thickness and carry inside/outside faces, layer bands, and hosted opening voids.
+- Floor and roof footprint editing supports vertex handles, edge handles, attached addition targeting, hover previews, split/delete/clean actions, and reviewed wall/roof sync.
+- Site intelligence has a first service-backed contract for elevation, weather grid metadata, climate zone, and keyed ASCE/ICC provider readiness.
+- The editor shell now uses a professional studio architecture: persistent Store/Cart, icon-first command overflow, consolidated Build/Systems navigation, real workspace modes, and adaptive drawers/bottom sheets so tool and inspector information stays readable in partial-window layouts.
+- Geometry tests cover zero-length walls, L-shaped floor framing, bearing walls that fall inside a bounding box but outside the actual floor, and reviewed floor-driven updates.
 
 ## 3. BIM-Lite Model Direction
 
@@ -88,6 +99,30 @@ The current framing-kernel pass leaves the project in this state:
 - Floor/deck derivation now uses a support-grid pipeline rather than recalculating posts independently from beams.
 - Wall and roof style fields are additive and backward-compatible, but the UI should prefer the new style controls.
 - Rendering still uses simple boxes with cut markers. True cut solids and collision cleanup are the next major geometry task.
+- Floors render as plan polygons in 3D, and walls now have derived solids with opening void metadata. Roofs, openings, and framing members still need deeper solid modeling and true cut faces.
+
+## 2.1 Editor Shell And UX Architecture
+
+The editor shell should support a professional native-app feel without changing BIM source-of-truth contracts.
+
+- `AppShell` owns responsive panel state and exposes adaptive Tools / Canvas / Inspector navigation.
+- `TopCommandBar` owns project identity, file/export commands, workspace mode navigation, Store/Cart actions, account/future stubs, and compact level/snap controls where space permits.
+- `WorkspaceMode` is UI-only editor state. It maps the professional mode switch (`plan2d`, `framing3d`, `split`, `sheets`, `materials`, `code`) onto existing `viewMode`, `viewportPanel`, and display-mode state without changing `ProjectDocument`.
+- The primary rail is intentionally consolidated: `Build` owns structure, openings, roof, footprint editing, and generation; `Systems` owns electrical, plumbing, and HVAC. Do not split those back into separate primary tabs unless the product model changes.
+- Tools and inspector remain normal panels on wide desktop, become drawers at standard/partial widths, and become bottom sheets on narrow screens.
+- Shared UI primitives such as icons, responsive fields, metric rows, command buttons, tool sections, feature-stub buttons, and canvas panel headers must protect minimum readable control widths.
+- The shell may reorganize chrome, but it must not duplicate BIM truth outside `ProjectDocument`, derived selectors, or store actions.
+- The right side must remain a single inspector/dock. Do not add a second right panel that repeats selected element, material, or code information.
+
+Responsive gates:
+
+- `>= 1360px`: full four-region editor.
+- `1100-1359px`: tool panel plus inspector drawer.
+- `760-1099px`: canvas-priority workspace with mutually exclusive tools/inspector drawers.
+- `< 760px`: top mode navigation and bottom-sheet panels.
+- 2D/3D/Split controls must remain available at every breakpoint. Compact layouts may show one view at a time, but the 3D view must not disappear.
+
+Browser QA for shell changes must include roughly `1440x900`, `1100x760`, `820x700`, and `390x800`, plus the review-preview modal and material/takeoff table.
 
 The saved source of truth remains `ProjectDocument`. Derived framing, renderables, support grids, warnings, and takeoff are regenerated.
 
@@ -293,6 +328,7 @@ Implemented portions:
 - Structural purlin mode distinguishes braced purlins from battens/nailers.
 - Inspector exposes key floor/deck/wall/roof framing style controls.
 - Tests cover support grids, ledger decks, purlin struts, plates/corner packs, terrain seating, and unresolved intersections.
+- Floor render surfaces and load-path checks now use real floor polygons, which is the pattern future wall/roof/section geometry should follow.
 
 Still needed:
 
@@ -307,6 +343,27 @@ Still needed:
 The next architecture step is **Step 7C: Trimmed Solids, Roof/Wall/Floor Style Depth, And Construction Accessories**.
 
 It should continue remaking weak geometry paths around the framing kernel, not polishing old display behavior. The priority is to make the building model operational before spending effort on blueprint/PDF polish, supplier pricing, or advanced MEP.
+
+First Step 7C slice completed:
+
+- Polygon-based 3D floor surface rendering.
+- Real-polygon bearing-wall support validation.
+- Opening placement/resize constraints.
+- Regression tests for invalid zero-length walls and false-positive L-shaped floor support.
+
+Next Step 7C slices should extend the same approach to wall solids with opening voids, roof topology, and member cut/trim solids.
+
+## 10. Repository Hygiene
+
+Generated files should not obscure source changes. The repo now ignores dependency directories, Vite cache, client build output, logs, and local env files. Normal engineering handoff should include only source, tests, docs, and intentional schema/service changes.
+
+Use these checks before handoff:
+
+```bash
+npm test
+cd client && npx tsc --noEmit
+cd ../server && npm run build
+```
 
 ## 9. Accuracy Position
 

@@ -9,7 +9,9 @@
     "dev:server": "cd server && npm run dev",
     "build": "cd client && npm run build && cd ../server && npm run build",
     "install:all": "cd client && npm install && cd ../server && npm install",
-    "test": "cd server && npx tsx ../tests/geometry.test.ts"
+    "test": "cd server && npx tsx ../tests/geometry.test.ts",
+    "test:robots": "cd server && npx tsx ../tests/robots.test.ts",
+    "setup-githooks": "git config core.hooksPath .githooks || true && chmod +x .githooks/* || true"
   },
   "keywords": [],
   "author": "",

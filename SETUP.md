@@ -62,12 +62,23 @@ From the project root:
 
 ```bash
 npm run build
-npm test -- --runInBand
+npm test
 ```
 
 `npm run build` type-checks and builds the client, then type-checks the server.
 
-`npm test -- --runInBand` runs the current geometry golden test. That test checks terrain sampling, derived framing renderables, pier blocks, roof planes, gable-end framing, opening cripples, dimensional lumber profiles, support grids, ledger decks, wall plates/corner packs, structural purlin struts, unresolved framing conditions, and pier block terrain seating.
+`npm test` runs the current geometry golden test. That test checks terrain sampling, derived framing renderables, wall solids, pier blocks, roof planes, gable-end framing, opening cripples, dimensional lumber profiles, support grids, ledger decks, wall plates/corner packs, structural purlin struts, unresolved framing conditions, L-shaped floor containment, reviewed floor-driven wall/roof sync previews, real-polygon load-path checks, and pier block terrain seating.
+
+For a quicker source-only handoff check that does not regenerate `client/dist`, run:
+
+```bash
+npm test
+cd client
+npx tsc --noEmit
+cd ../server
+npm run build
+cd ..
+```
 
 ## Using The App
 
@@ -76,23 +87,33 @@ Open `http://localhost:5173/`.
 Primary modes:
 
 - Site: terrain type, base elevation, slope, and height points.
-- Structure: raised floors, decks, half walls, stairs, walls, joists, beams, blocking, posts, piers, and framing.
-- Openings: doors/windows hosted by walls.
-- Roof: roof footprint, pitch, eave/rake overhang, attachment mode, purlin mode, rafters, gable framing, shed/lean-to starter behavior, and roof planes.
-- Electrical: panels, circuits, outlets, switches, lights, and starter device placement.
-- Plumbing: fixtures, supply/drain/vent starter paths.
-- HVAC: starter duct paths and future mini-split/ventilation workflows.
-- Materials: takeoff totals and supplier matches.
+- Build: raised floors, decks, half walls, stairs, walls, openings, roofs, joists, beams, blocking, posts, piers, framing, polygon footprint editing, attached additions, room generation, and reviewed footprint updates.
+- Systems: electrical, plumbing, HVAC, starter device/fixture placement, routed paths, circuits, ducts, and future coordination workflows.
+- Materials: takeoff totals, supplier matches, store selection, and cart/share workflows.
 - Code: current rule warnings and quick fixes.
 - Blueprints: current sheet/export preview.
 
 Current editor areas:
 
-- Left mode rail for major workflows.
-- Left tool panel for mode tools, project browser, layers, and code/material summaries.
-- Center 2D plan canvas with placement tools, handles, dimensions, warnings, pan/zoom, and snapping.
-- Optional lower 3D/diagram panel with framing, architectural, and painted display modes.
-- Right inspector with placement, dimensions, assembly, derived, materials, and code tabs.
+- Studio command bar with project selector, file/export commands, persistent Store/Cart, workspace modes, and future-suite stub actions.
+- Left mode rail for consolidated major workflows.
+- Left tool panel for mode tools, project browser, layers, review-update actions, and code/material summaries.
+- Center workspace with real `2D Plan`, `3D Framing`, `Split`, `Sheets`, `Materials`, and `Code` modes.
+- 2D plan canvas with placement tools, handles, dimensions, warnings, pan/zoom, and snapping.
+- 3D/diagram viewport with framing, architectural, and painted display modes.
+- Single right inspector with Properties, Assembly, Derived, Materials, and Code tabs.
+- Site Intelligence panel for early elevation, weather grid, climate zone, and keyed provider-readiness lookup.
+- Adaptive panel controls collapse tools and inspector into drawers or bottom sheets in partial-width windows.
+
+Responsive layout expectations:
+
+- `>= 1360px`: mode rail, tools, canvas/3D, and inspector can all remain visible.
+- `1100-1359px`: inspector is available as a right drawer.
+- `760-1099px`: tools and inspector are mutually exclusive drawers, with canvas prioritized.
+- `< 760px`: mode navigation moves to the top of the workspace and tools/inspector become bottom sheets.
+- `2D Plan`, `3D Framing`, and `Split` must remain available at every width.
+- Store and Cart must remain discoverable at every width.
+- Inputs and selects should remain readable; dense tables should scroll rather than crush columns.
 
 ## Current Project Structure
 
@@ -129,6 +150,7 @@ Current editor areas:
 |       `-- models/
 |-- shared/
 |-- tests/
+|-- .gitignore
 |-- README.md
 |-- ARCHITECTURE_PLAN.md
 |-- CONTRACTOR_GRADE_ROADMAP.md
@@ -157,12 +179,17 @@ Do not commit `.env`.
 | Port `3000` is in use | Set `PORT=3001` in `server/.env` or stop the other process. |
 | 3D viewport is blank | Confirm WebGL is enabled in the browser and check the dev console. |
 | App shows stale behavior | Restart the Vite dev server and refresh `http://localhost:5173/`. |
+| Git status shows generated build/cache noise | `client/dist`, Vite cache, dependency folders, logs, and `.env` files are ignored. Restore tracked build output unless you are intentionally updating release artifacts. |
 
 ## Development Notes
 
 - `ProjectDocument` is the saved source of truth.
 - Derived framing, terrain contours, roof planes, pier blocks, rules, and takeoff rows are regenerated from the project document.
+- 3D floor surfaces render from actual floor polygons; load-path validation also samples actual floor polygons.
+- Opening placement and resizing are constrained to the host wall segment.
+- Wall solids, polygon footprint editing, attached addition previews, and reviewed floor-to-wall/roof sync are part of the active editor baseline.
+- The studio UI shell is expected to protect readability in partial windows, preserve Store/Cart and 2D/3D/Split access, and must not change BIM source-of-truth contracts.
 - Documentation intentionally does not claim contractor-grade approval yet.
-- Step 6 assembly/orientation work and the first Step 7B framing-kernel pass are implemented.
-- The next major technical step is Step 7C: trimmed solids, construction style catalogs, and building accessories.
+- Step 6 assembly/orientation work, Step 7B framing-kernel foundations, wall solids, and the polygon editor workflow are implemented.
+- The next major technical work is richer roof topology, true member cut faces, construction style catalogs, visual diff overlays, and building accessories.
 - Competitive/product benchmarking is tracked in `COMPETITIVE_STANDARDS_AUDIT.md`.

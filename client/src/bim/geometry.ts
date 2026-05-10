@@ -19,13 +19,15 @@ import {
   QuaternionTuple,
   RoofElement,
   RoofPlaneDerived,
+  RoofTopologyDerived,
   RuleResult,
   StairElement,
   SupportGrid,
   TerrainContourDerived,
+  WallSolidDerived,
   WallElement,
 } from './types'
-import { deriveEnvelopeSurfaces, deriveLayerTakeoffFragments } from './assembly'
+import { deriveEnvelopeSurfaces, deriveLayerTakeoffFragments, normalizeAssembly } from './assembly'
 import { intervalContains, isOrthogonalPolygon, lineIntervalsInPolygon, pointInPolygon, polygonPerimeterSegments } from './framingGeometry'
 import { purlinSpacingForRoof } from './spanTables'
 import { calculatePierHeight, generateTerrainMesh, sampleTerrain } from './terrain'
@@ -301,15 +303,29 @@ function normalizedWall(wall: WallElement): Required<Pick<WallElement, 'wallKind
 }
 
 function normalizedRoof(roof: RoofElement): Required<Pick<RoofElement, 'attachment' | 'ridgePolicy' | 'purlinMode' | 'eaveOverhang' | 'rakeOverhang' | 'roofingMaterialId'>> & RoofElement {
+  const shedLike = isSinglePlaneRoof(roof.roofType)
   return {
     ...roof,
-    attachment: roof.attachment ?? (roof.roofType === 'shed' ? 'wallAttachedShed' : 'freestanding'),
-    ridgePolicy: roof.ridgePolicy ?? (roof.roofType === 'hip' ? 'engineered' : 'ridgeBoard'),
+    attachment: roof.attachment ?? (roof.roofType === 'shed' || roof.roofType === 'leanTo' ? 'wallAttachedShed' : roof.roofType === 'porch' ? 'overPorch' : roof.roofType === 'roofOverDeck' ? 'overDeck' : 'freestanding'),
+    ridgePolicy: roof.ridgePolicy ?? (roof.roofType === 'hip' || roof.roofType === 'mansard' ? 'engineered' : shedLike ? 'ridgeBeam' : 'ridgeBoard'),
     purlinMode: roof.purlinMode ?? 'roofBattenNailer',
     eaveOverhang: roof.eaveOverhang ?? roof.overhang,
     rakeOverhang: roof.rakeOverhang ?? roof.overhang,
     roofingMaterialId: roof.roofingMaterialId ?? 'asphalt-shingle',
   }
+}
+
+function isSinglePlaneRoof(roofType: RoofElement['roofType']): boolean {
+  return roofType === 'shed' || roofType === 'leanTo' || roofType === 'porch' || roofType === 'roofOverDeck' || roofType === 'flat' || roofType === 'lowSlope'
+}
+
+function roofRolePrefix(roof: RoofElement): string {
+  if (roof.roofType === 'leanTo') return 'lean-to'
+  if (roof.roofType === 'porch') return 'porch'
+  if (roof.roofType === 'roofOverDeck') return 'roof-over-deck'
+  if (roof.roofType === 'lowSlope') return 'low-slope'
+  if (roof.roofType === 'flat') return 'flat'
+  return 'shed'
 }
 
 function edgeForLine(floor: FloorElement, line: number): FloorEdgeCondition | undefined {
@@ -322,6 +338,117 @@ function edgeForLine(floor: FloorElement, line: number): FloorEdgeCondition | un
     if (Math.abs(line - bounds.maxY) < 0.001) return 'south'
   }
   return undefined
+}
+
+function deriveWallSolids(project: ProjectDocument): WallSolidDerived[] {
+  const solids: WallSolidDerived[] = []
+  for (const inputWall of project.elements.filter((element): element is WallElement => element.type === 'wall')) {
+    const wall = normalizedWall(inputWall)
+    const length = distance2(wall.path[0], wall.path[1])
+    if (length < 0.1) continue
+    const assembly = normalizeAssembly(project, wall.assemblyId)
+    const thickness = Math.max(assembly?.thickness ?? (wall.exterior ? 0.5 : 0.35), 0.125)
+    const baseElevation = project.levels.find((level) => level.id === wall.levelId)?.elevation ?? 0
+    const dx = (wall.path[1].x - wall.path[0].x) / length
+    const dy = (wall.path[1].y - wall.path[0].y) / length
+    const axes = wallAxes(dx, dy)
+    const halfThickness = thickness / 2
+    const insideFace = [
+      { x: wall.path[0].x - axes.normal.x * halfThickness, y: wall.path[0].y - axes.normal.y * halfThickness, z: baseElevation },
+      { x: wall.path[1].x - axes.normal.x * halfThickness, y: wall.path[1].y - axes.normal.y * halfThickness, z: baseElevation },
+      { x: wall.path[1].x - axes.normal.x * halfThickness, y: wall.path[1].y - axes.normal.y * halfThickness, z: baseElevation + wall.height },
+      { x: wall.path[0].x - axes.normal.x * halfThickness, y: wall.path[0].y - axes.normal.y * halfThickness, z: baseElevation + wall.height },
+    ]
+    const outsideFace = [
+      { x: wall.path[0].x + axes.normal.x * halfThickness, y: wall.path[0].y + axes.normal.y * halfThickness, z: baseElevation },
+      { x: wall.path[1].x + axes.normal.x * halfThickness, y: wall.path[1].y + axes.normal.y * halfThickness, z: baseElevation },
+      { x: wall.path[1].x + axes.normal.x * halfThickness, y: wall.path[1].y + axes.normal.y * halfThickness, z: baseElevation + wall.height },
+      { x: wall.path[0].x + axes.normal.x * halfThickness, y: wall.path[0].y + axes.normal.y * halfThickness, z: baseElevation + wall.height },
+    ]
+    let runningOffset = -halfThickness
+    const layerBands = (assembly?.layers ?? []).map((layer) => {
+      const materialThickness = layer.thickness ? layer.thickness / 12 : 0
+      const profileThickness = project.materials[layer.materialId]?.profile?.actualDepth ?? 0
+      const contributes = ['finish', 'paint', 'sheathing', 'weatherBarrier', 'siding', 'roofing', 'underlayment', 'subfloor', 'flooring', 'structure'].includes(layer.role)
+      const bandThickness = contributes ? Math.max(materialThickness, profileThickness) : 0
+      const startOffset = runningOffset
+      const endOffset = Math.min(halfThickness, startOffset + bandThickness)
+      runningOffset = endOffset
+      return {
+        layerIndex: layer.index,
+        layerRole: layer.role,
+        materialId: layer.materialId,
+        side: layer.side,
+        startOffset,
+        endOffset,
+      }
+    })
+    if (layerBands.length > 0 && Math.abs(layerBands[layerBands.length - 1].endOffset - halfThickness) > 0.001) {
+      layerBands[layerBands.length - 1] = { ...layerBands[layerBands.length - 1], endOffset: halfThickness }
+    }
+    const openingVoids = getWallOpenings(project, wall.id)
+      .map((opening) => ({
+        openingId: opening.id,
+        openingKind: opening.openingKind,
+        centerOffset: opening.center,
+        startOffset: Math.max(0, opening.center - opening.width / 2),
+        endOffset: Math.min(length, opening.center + opening.width / 2),
+        sillHeight: Math.max(0, opening.sillHeight),
+        headHeight: Math.min(wall.height, opening.sillHeight + opening.height),
+        width: opening.width,
+        height: opening.height,
+      }))
+      .filter((opening) => opening.endOffset - opening.startOffset > 0.05 && opening.headHeight - opening.sillHeight > 0.05)
+
+    // helper: centroid for 3D polygon
+    function centroid3(points: { x: number; y: number; z: number }[]) {
+      const total = points.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y, z: acc.z + p.z }), { x: 0, y: 0, z: 0 })
+      return { x: total.x / Math.max(points.length, 1), y: total.y / Math.max(points.length, 1), z: total.z / Math.max(points.length, 1) }
+    }
+
+    const insideFaceDerived = {
+      id: `${wall.id}-face-inside`,
+      sourceElementId: wall.id,
+      kind: 'inside',
+      polygon: insideFace,
+      normal: { x: -axes.normal.x, y: -axes.normal.y, z: 0 },
+      center: centroid3(insideFace),
+    }
+    const outsideFaceDerived = {
+      id: `${wall.id}-face-outside`,
+      sourceElementId: wall.id,
+      kind: 'outside',
+      polygon: outsideFace,
+      normal: { x: axes.normal.x, y: axes.normal.y, z: 0 },
+      center: centroid3(outsideFace),
+    }
+
+    solids.push({
+      id: `${wall.id}-solid`,
+      sourceElementId: wall.id,
+      assemblyId: wall.assemblyId,
+      start: { ...wall.path[0], z: baseElevation },
+      end: { ...wall.path[1], z: baseElevation },
+      center: {
+        x: (wall.path[0].x + wall.path[1].x) / 2,
+        y: (wall.path[0].y + wall.path[1].y) / 2,
+        z: baseElevation + wall.height / 2,
+      },
+      length,
+      height: wall.height,
+      thickness,
+      baseElevation,
+      insideFace,
+      outsideFace,
+      lengthAxis: axes.along,
+      thicknessAxis: axes.normal,
+      upAxis: axes.up,
+      openingVoids,
+      layerBands,
+      faces: [insideFaceDerived, outsideFaceDerived],
+    })
+  }
+  return solids
 }
 
 function deriveFloorSupportGrid(project: ProjectDocument, inputFloor: FloorElement): SupportGrid {
@@ -385,7 +512,7 @@ function deriveFloorSupportGrid(project: ProjectDocument, inputFloor: FloorEleme
     }
   }
 
-  if (!isOrthogonalPolygon(floor.polygon)) warnings.push('Only simple orthogonal floor/deck footprints are supported by the first-pass framing kernel.')
+  if (!isOrthogonalPolygon(floor.polygon)) warnings.push('Skewed floor/deck footprint kept in the model; review generated beam intervals, joists, and post layout before purchase.')
   if (floor.deckMode === 'ledger' && !floor.ledgerEdge) warnings.push('Ledger deck mode is selected without a ledger edge.')
   if (postPoints.filter((point) => point.kind === 'post').length === 0 && floor.deckMode !== 'ledger') warnings.push('No post points were generated for this floor/deck support grid.')
 
@@ -609,6 +736,7 @@ function generateWallFraming(project: ProjectDocument, inputWall: WallElement): 
   const wall = normalizedWall(inputWall)
   const openings = getWallOpenings(project, wall.id)
   const length = distance2(wall.path[0], wall.path[1])
+  if (length < 0.1) return []
   const spacing = inchesToFeet(wall.studSpacing)
   const start = wall.path[0]
   const end = wall.path[1]
@@ -717,7 +845,7 @@ function generateRoofFraming(project: ProjectDocument, inputRoof: RoofElement): 
   const bounds = polygonBounds(roof.footprint)
   const width = bounds.maxY - bounds.minY
   const length = bounds.maxX - bounds.minX
-  if (roof.roofType === 'shed' || roof.roofType === 'flat') return generateShedRoofFraming(project, roof, bounds)
+  if (isSinglePlaneRoof(roof.roofType)) return generateShedRoofFraming(project, roof, bounds)
   const peakZ = roof.baseElevation + (width / 2) * (roof.pitchRise / roof.pitchRun)
   const spacing = inchesToFeet(roof.rafterSpacing)
   const rafterMaterial = materialIdForNominal(project, roof.rafterSize, 'rafter-2x8')
@@ -796,6 +924,58 @@ function generateRoofFraming(project: ProjectDocument, inputRoof: RoofElement): 
     members.push(member(`${roof.id}-engineering-flag`, roof.id, 'roof', 'long roof span review marker', rafterMaterial, { x: bounds.minX, y: bounds.minY, z: roof.baseElevation }, { x: bounds.maxX, y: bounds.maxY, z: roof.baseElevation }, roof.rafterSize, 'rafter'))
   }
 
+  if (roof.roofType === 'hip') {
+    const ridgeInset = Math.min(width * 0.18, Math.max(2, length * 0.12))
+    const ridgeStart = { x: bounds.minX + ridgeInset, y: ridgeY, z: peakZ }
+    const ridgeEnd = { x: bounds.maxX - ridgeInset, y: ridgeY, z: peakZ }
+    const corners = [
+      { x: bounds.minX - rakeOverhang, y: bounds.minY - eaveOverhang, z: roof.baseElevation },
+      { x: bounds.minX - rakeOverhang, y: bounds.maxY + eaveOverhang, z: roof.baseElevation },
+      { x: bounds.maxX + rakeOverhang, y: bounds.minY - eaveOverhang, z: roof.baseElevation },
+      { x: bounds.maxX + rakeOverhang, y: bounds.maxY + eaveOverhang, z: roof.baseElevation },
+    ]
+    members.push(
+      member(`${roof.id}-hip-nw`, roof.id, 'roof', 'hip rafter with plumb/seat cuts', rafterMaterial, corners[0], ridgeStart, roof.rafterSize, 'rafter', undefined, { collisionPriority: 24 }),
+      member(`${roof.id}-hip-sw`, roof.id, 'roof', 'hip rafter with plumb/seat cuts', rafterMaterial, corners[1], ridgeStart, roof.rafterSize, 'rafter', undefined, { collisionPriority: 24 }),
+      member(`${roof.id}-hip-ne`, roof.id, 'roof', 'hip rafter with plumb/seat cuts', rafterMaterial, corners[2], ridgeEnd, roof.rafterSize, 'rafter', undefined, { collisionPriority: 24 }),
+      member(`${roof.id}-hip-se`, roof.id, 'roof', 'hip rafter with plumb/seat cuts', rafterMaterial, corners[3], ridgeEnd, roof.rafterSize, 'rafter', undefined, { collisionPriority: 24 }),
+    )
+    for (const x of supportPositions(bounds.minX + spacing, bounds.maxX - spacing, spacing * 2)) {
+      members.push(
+        member(`${roof.id}-jack-n-${members.length}`, roof.id, 'roof', 'jack rafter trimmed to hip', rafterMaterial, { x, y: bounds.minY - eaveOverhang, z: roof.baseElevation }, { x: Math.min(Math.max(x, ridgeStart.x), ridgeEnd.x), y: ridgeY - ridgeSetback, z: peakZ }, roof.rafterSize, 'rafter', undefined, { collisionPriority: 16 }),
+        member(`${roof.id}-jack-s-${members.length}`, roof.id, 'roof', 'jack rafter trimmed to hip', rafterMaterial, { x, y: bounds.maxY + eaveOverhang, z: roof.baseElevation }, { x: Math.min(Math.max(x, ridgeStart.x), ridgeEnd.x), y: ridgeY + ridgeSetback, z: peakZ }, roof.rafterSize, 'rafter', undefined, { collisionPriority: 16 }),
+      )
+    }
+  }
+
+  if (roof.roofType === 'crossGable' || roof.roofType === 'valley' || roof.roofType === 'dormer') {
+    const centerX = bounds.minX + length / 2
+    const crossWidth = Math.max(width * 0.42, 6)
+    const crossPeakZ = roof.baseElevation + (crossWidth / 2) * (roof.pitchRise / roof.pitchRun)
+    members.push(
+      member(`${roof.id}-cross-ridge`, roof.id, 'roof', roof.roofType === 'dormer' ? 'dormer ridge board' : 'cross gable ridge board', ridgeMaterial, { x: centerX, y: bounds.minY + width * 0.2, z: crossPeakZ }, { x: centerX, y: bounds.maxY - width * 0.2, z: crossPeakZ }, roof.rafterSize, 'ridge', undefined, { collisionPriority: 22 }),
+      member(`${roof.id}-valley-nw`, roof.id, 'roof', 'valley rafter at intersecting roof plane', rafterMaterial, { x: centerX - crossWidth / 2, y: ridgeY, z: peakZ - 0.1 }, { x: centerX, y: ridgeY - crossWidth / 2, z: crossPeakZ }, roof.rafterSize, 'rafter', undefined, { collisionPriority: 25 }),
+      member(`${roof.id}-valley-ne`, roof.id, 'roof', 'valley rafter at intersecting roof plane', rafterMaterial, { x: centerX + crossWidth / 2, y: ridgeY, z: peakZ - 0.1 }, { x: centerX, y: ridgeY - crossWidth / 2, z: crossPeakZ }, roof.rafterSize, 'rafter', undefined, { collisionPriority: 25 }),
+    )
+    const dormerRole = roof.roofType === 'dormer' ? 'dormer jack rafter' : 'cross gable jack rafter trimmed to valley'
+    for (let y = bounds.minY + spacing; y < bounds.maxY - spacing; y += spacing * 2) {
+      members.push(member(`${roof.id}-cross-jack-${members.length}`, roof.id, 'roof', dormerRole, rafterMaterial, { x: centerX - crossWidth / 2, y, z: roof.baseElevation }, { x: centerX, y, z: roofZAtY(y) + 0.3 }, roof.rafterSize, 'rafter', undefined, { collisionPriority: 16 }))
+    }
+  }
+
+  if (roof.roofType === 'gambrel' || roof.roofType === 'mansard') {
+    const lowerBreak = width * 0.22
+    const upperBreak = width * 0.38
+    for (let x = bounds.minX; x <= bounds.maxX + 0.001; x += spacing * 2) {
+      members.push(
+        member(`${roof.id}-${roof.roofType}-lower-l-${members.length}`, roof.id, 'roof', `${roof.roofType} lower steep rafter`, rafterMaterial, { x, y: bounds.minY - eaveOverhang, z: roof.baseElevation }, { x, y: bounds.minY + lowerBreak, z: roof.baseElevation + upperBreak }, roof.rafterSize, 'rafter', undefined, { collisionPriority: 17 }),
+        member(`${roof.id}-${roof.roofType}-upper-l-${members.length}`, roof.id, 'roof', `${roof.roofType} upper rafter`, rafterMaterial, { x, y: bounds.minY + lowerBreak, z: roof.baseElevation + upperBreak }, { x, y: ridgeY - ridgeSetback, z: peakZ }, roof.rafterSize, 'rafter', undefined, { collisionPriority: 17 }),
+        member(`${roof.id}-${roof.roofType}-lower-r-${members.length}`, roof.id, 'roof', `${roof.roofType} lower steep rafter`, rafterMaterial, { x, y: bounds.maxY + eaveOverhang, z: roof.baseElevation }, { x, y: bounds.maxY - lowerBreak, z: roof.baseElevation + upperBreak }, roof.rafterSize, 'rafter', undefined, { collisionPriority: 17 }),
+        member(`${roof.id}-${roof.roofType}-upper-r-${members.length}`, roof.id, 'roof', `${roof.roofType} upper rafter`, rafterMaterial, { x, y: bounds.maxY - lowerBreak, z: roof.baseElevation + upperBreak }, { x, y: ridgeY + ridgeSetback, z: peakZ }, roof.rafterSize, 'rafter', undefined, { collisionPriority: 17 }),
+      )
+    }
+  }
+
   return members
 }
 
@@ -813,7 +993,8 @@ function generateShedRoofFraming(project: ProjectDocument, inputRoof: RoofElemen
     for (const interval of lineIntervalsInPolygon(roof.footprint, 'y', x)) {
       const startZ = roof.baseElevation + (interval.start - bounds.minY) * (roof.pitchRise / Math.max(roof.pitchRun, 0.1))
       const endZ = roof.baseElevation + (interval.end - bounds.minY) * (roof.pitchRise / Math.max(roof.pitchRun, 0.1))
-      members.push(member(`${roof.id}-shed-rafter-${members.length}`, roof.id, 'roof', roof.attachment === 'wallAttachedShed' ? 'wall-attached shed rafter' : 'shed rafter', rafterMaterial, { x, y: interval.start - roof.eaveOverhang, z: startZ }, { x, y: interval.end + roof.eaveOverhang, z: endZ }, roof.rafterSize, 'rafter'))
+      const prefix = roofRolePrefix(roof)
+      members.push(member(`${roof.id}-${prefix}-rafter-${members.length}`, roof.id, 'roof', roof.attachment === 'wallAttachedShed' ? `${prefix} wall-attached rafter` : `${prefix} rafter`, rafterMaterial, { x, y: interval.start - roof.eaveOverhang, z: startZ }, { x, y: interval.end + roof.eaveOverhang, z: endZ }, roof.rafterSize, 'rafter'))
     }
   }
 
@@ -823,7 +1004,7 @@ function generateShedRoofFraming(project: ProjectDocument, inputRoof: RoofElemen
       const z = roof.baseElevation + offset * (roof.pitchRise / Math.max(roof.pitchRun, 0.1)) + purlinTopOffset
       const y = bounds.minY + offset
       for (const interval of lineIntervalsInPolygon(roof.footprint, 'x', y)) {
-        members.push(member(`${roof.id}-shed-purlin-${members.length}`, roof.id, 'roof', roof.purlinMode === 'structuralPurlinWithStruts' ? 'shed structural purlin with struts' : 'shed roof batten / sheathing nailer', purlinMaterial, { x: interval.start - roof.rakeOverhang, y, z }, { x: interval.end + roof.rakeOverhang, y, z }, '2x4', 'purlin'))
+        members.push(member(`${roof.id}-shed-purlin-${members.length}`, roof.id, 'roof', roof.purlinMode === 'structuralPurlinWithStruts' ? `${roofRolePrefix(roof)} structural purlin with struts` : `${roofRolePrefix(roof)} roof batten / sheathing nailer`, purlinMaterial, { x: interval.start - roof.rakeOverhang, y, z }, { x: interval.end + roof.rakeOverhang, y, z }, '2x4', 'purlin'))
       }
       if (roof.purlinMode === 'structuralPurlinWithStruts') {
         for (const x of supportPositions(bounds.minX, bounds.maxX, 8).slice(1, -1)) {
@@ -882,7 +1063,7 @@ function generateRoofPlanes(project: ProjectDocument): RoofPlaneDerived[] {
     const width = bounds.maxY - bounds.minY
     const ridgeY = bounds.minY + width / 2
     const peakZ = roof.baseElevation + (width / 2) * (roof.pitchRise / roof.pitchRun)
-    if (roof.roofType === 'shed' || roof.roofType === 'flat') {
+    if (isSinglePlaneRoof(roof.roofType)) {
       const highZ = roof.baseElevation + width * (roof.pitchRise / Math.max(roof.pitchRun, 0.1))
       const single = [
         { x: bounds.minX - roof.rakeOverhang, y: bounds.minY - roof.eaveOverhang, z: roof.baseElevation },
@@ -890,7 +1071,8 @@ function generateRoofPlanes(project: ProjectDocument): RoofPlaneDerived[] {
         { x: bounds.maxX + roof.rakeOverhang, y: bounds.maxY + roof.eaveOverhang, z: highZ },
         { x: bounds.minX - roof.rakeOverhang, y: bounds.maxY + roof.eaveOverhang, z: highZ },
       ]
-      planes.push({ id: `${roof.id}-plane-shed`, sourceElementId: roof.id, kind: 'single', polygon: single, area: roofSlopeArea(single), materialId: 'osb-7-16', finishMaterialId: 'asphalt-shingle' })
+      const kind = roof.roofType === 'flat' ? 'flat' : roof.roofType === 'lowSlope' ? 'lowSlope' : roof.roofType === 'porch' ? 'porch' : roof.roofType === 'roofOverDeck' ? 'deck' : 'single'
+      planes.push({ id: `${roof.id}-plane-${roof.roofType}`, sourceElementId: roof.id, kind, polygon: single, area: roofSlopeArea(single), materialId: 'osb-7-16', finishMaterialId: roof.roofingMaterialId })
       continue
     }
     const left = [
@@ -916,13 +1098,99 @@ function generateRoofPlanes(project: ProjectDocument): RoofPlaneDerived[] {
       { x: bounds.maxX, y: bounds.maxY, z: roof.baseElevation },
     ]
     planes.push(
-      { id: `${roof.id}-plane-left`, sourceElementId: roof.id, kind: 'left', polygon: left, area: roofSlopeArea(left), materialId: 'osb-7-16', finishMaterialId: 'asphalt-shingle' },
-      { id: `${roof.id}-plane-right`, sourceElementId: roof.id, kind: 'right', polygon: right, area: roofSlopeArea(right), materialId: 'osb-7-16', finishMaterialId: 'asphalt-shingle' },
+      { id: `${roof.id}-plane-left`, sourceElementId: roof.id, kind: roof.roofType === 'gambrel' ? 'gambrelUpper' : roof.roofType === 'mansard' ? 'mansardUpper' : 'left', polygon: left, area: roofSlopeArea(left), materialId: 'osb-7-16', finishMaterialId: roof.roofingMaterialId },
+      { id: `${roof.id}-plane-right`, sourceElementId: roof.id, kind: roof.roofType === 'gambrel' ? 'gambrelUpper' : roof.roofType === 'mansard' ? 'mansardUpper' : 'right', polygon: right, area: roofSlopeArea(right), materialId: 'osb-7-16', finishMaterialId: roof.roofingMaterialId },
       { id: `${roof.id}-gable-west`, sourceElementId: roof.id, kind: 'gable', polygon: westGable, area: roofSlopeArea(westGable), materialId: 'osb-7-16', finishMaterialId: 'fiber-cement-siding' },
       { id: `${roof.id}-gable-east`, sourceElementId: roof.id, kind: 'gable', polygon: eastGable, area: roofSlopeArea(eastGable), materialId: 'osb-7-16', finishMaterialId: 'fiber-cement-siding' },
     )
+    if (roof.roofType === 'hip') {
+      const front = [
+        { x: bounds.minX, y: bounds.minY, z: roof.baseElevation },
+        { x: bounds.maxX, y: bounds.minY, z: roof.baseElevation },
+        { x: bounds.maxX - width * 0.18, y: ridgeY, z: peakZ },
+        { x: bounds.minX + width * 0.18, y: ridgeY, z: peakZ },
+      ]
+      const back = [
+        { x: bounds.minX + width * 0.18, y: ridgeY, z: peakZ },
+        { x: bounds.maxX - width * 0.18, y: ridgeY, z: peakZ },
+        { x: bounds.maxX, y: bounds.maxY, z: roof.baseElevation },
+        { x: bounds.minX, y: bounds.maxY, z: roof.baseElevation },
+      ]
+      planes.push(
+        { id: `${roof.id}-hip-front`, sourceElementId: roof.id, kind: 'hip', polygon: front, area: roofSlopeArea(front), materialId: 'osb-7-16', finishMaterialId: roof.roofingMaterialId },
+        { id: `${roof.id}-hip-back`, sourceElementId: roof.id, kind: 'hip', polygon: back, area: roofSlopeArea(back), materialId: 'osb-7-16', finishMaterialId: roof.roofingMaterialId },
+      )
+    }
+    if (roof.roofType === 'crossGable' || roof.roofType === 'valley' || roof.roofType === 'dormer') {
+      const centerX = bounds.minX + (bounds.maxX - bounds.minX) / 2
+      const valleyPlane = [
+        { x: centerX - width * 0.25, y: bounds.minY, z: roof.baseElevation },
+        { x: centerX, y: ridgeY, z: peakZ },
+        { x: centerX + width * 0.25, y: bounds.minY, z: roof.baseElevation },
+      ]
+      planes.push({ id: `${roof.id}-${roof.roofType}-valley-plane`, sourceElementId: roof.id, kind: roof.roofType === 'dormer' ? 'dormer' : 'valley', polygon: valleyPlane, area: roofSlopeArea(valleyPlane), materialId: 'osb-7-16', finishMaterialId: roof.roofingMaterialId })
+    }
+    if (roof.roofType === 'gambrel' || roof.roofType === 'mansard') {
+      const lowerKind = roof.roofType === 'gambrel' ? 'gambrelLower' : 'mansardLower'
+      const lowerLeft = [
+        { x: bounds.minX, y: bounds.minY, z: roof.baseElevation },
+        { x: bounds.maxX, y: bounds.minY, z: roof.baseElevation },
+        { x: bounds.maxX, y: bounds.minY + width * 0.22, z: roof.baseElevation + width * 0.22 },
+        { x: bounds.minX, y: bounds.minY + width * 0.22, z: roof.baseElevation + width * 0.22 },
+      ]
+      const lowerRight = [
+        { x: bounds.minX, y: bounds.maxY - width * 0.22, z: roof.baseElevation + width * 0.22 },
+        { x: bounds.maxX, y: bounds.maxY - width * 0.22, z: roof.baseElevation + width * 0.22 },
+        { x: bounds.maxX, y: bounds.maxY, z: roof.baseElevation },
+        { x: bounds.minX, y: bounds.maxY, z: roof.baseElevation },
+      ]
+      planes.push(
+        { id: `${roof.id}-${lowerKind}-left`, sourceElementId: roof.id, kind: lowerKind, polygon: lowerLeft, area: roofSlopeArea(lowerLeft), materialId: 'osb-7-16', finishMaterialId: roof.roofingMaterialId },
+        { id: `${roof.id}-${lowerKind}-right`, sourceElementId: roof.id, kind: lowerKind, polygon: lowerRight, area: roofSlopeArea(lowerRight), materialId: 'osb-7-16', finishMaterialId: roof.roofingMaterialId },
+      )
+    }
   }
   return planes
+}
+
+function deriveRoofTopologies(project: ProjectDocument, roofPlanes: RoofPlaneDerived[], framing: FramingMember[]): RoofTopologyDerived[] {
+  return project.elements.filter((element): element is RoofElement => element.type === 'roof').map((roof) => {
+    const roofFraming = framing.filter((member) => member.sourceElementId === roof.id && member.subsystem === 'roof')
+    const toRun = (member: FramingMember): RoofTopologyDerived['rafters'][number] => ({
+      id: `${member.id}-run`,
+      sourceElementId: member.sourceElementId,
+      kind: member.role.includes('valley') ? 'valley'
+        : member.role.includes('jack') ? 'jackRafter'
+          : member.role.includes('hip') ? 'hip'
+            : member.role.includes('dormer') ? 'dormerRafter'
+              : member.role.includes('porch') ? 'porchRafter'
+                : member.role.includes('roof-over-deck') ? 'roofOverDeckRafter'
+                  : member.visualRole === 'ridge' ? 'ridge'
+                    : member.visualRole === 'purlin' ? 'purlin'
+                      : member.visualRole === 'fascia' ? 'fascia'
+                        : member.visualRole === 'rake' ? 'rake'
+                          : 'commonRafter',
+      start: member.start,
+      end: member.end,
+      roofPlaneIds: roofPlanes.filter((plane) => plane.sourceElementId === roof.id).map((plane) => plane.id),
+      materialId: member.materialId,
+    })
+    const runs = roofFraming.map(toRun)
+    return {
+      id: `${roof.id}-topology`,
+      sourceElementId: roof.id,
+      roofType: roof.roofType,
+      planeIds: roofPlanes.filter((plane) => plane.sourceElementId === roof.id).map((plane) => plane.id),
+      ridges: runs.filter((run) => run.kind === 'ridge'),
+      hips: runs.filter((run) => run.kind === 'hip'),
+      valleys: runs.filter((run) => run.kind === 'valley'),
+      rafters: runs.filter((run) => run.kind === 'commonRafter' || run.kind === 'dormerRafter' || run.kind === 'porchRafter' || run.kind === 'roofOverDeckRafter'),
+      jacks: runs.filter((run) => run.kind === 'jackRafter'),
+      purlins: runs.filter((run) => run.kind === 'purlin'),
+      trim: runs.filter((run) => run.kind === 'fascia' || run.kind === 'rake'),
+      warnings: [],
+    }
+  })
 }
 
 function generateTerrainContours(project: ProjectDocument): TerrainContourDerived[] {
@@ -996,6 +1264,16 @@ function collectUnresolvedIntersections(project: ProjectDocument, framing: Frami
   }
   for (const wall of project.elements.filter((element): element is WallElement => element.type === 'wall')) {
     const wallMembers = framing.filter((member) => member.sourceElementId === wall.id)
+    if (distance2(wall.path[0], wall.path[1]) < 0.1) {
+      unresolved.push({
+        id: `${wall.id}-zero-length`,
+        sourceElementId: wall.id,
+        kind: 'unresolved',
+        at: { ...wall.path[0], z: project.levels.find((level) => level.id === wall.levelId)?.elevation ?? 0 },
+        note: 'Wall path is too short to derive trustworthy plates, studs, or openings.',
+      })
+      continue
+    }
     if (!wallMembers.some((member) => member.role.includes('bottom plate')) || !wallMembers.some((member) => member.role.includes('top plate'))) {
       unresolved.push({
         id: `${wall.id}-missing-plates`,
@@ -1005,8 +1283,52 @@ function collectUnresolvedIntersections(project: ProjectDocument, framing: Frami
         note: 'Wall is missing top or bottom plate framing.',
       })
     }
+    for (const member of wallMembers) {
+      if (member.role.includes('corner stud pack')) continue
+      if (!['stud', 'plate', 'header', 'sill'].includes(member.visualRole ?? '')) continue
+      const startDistance = distancePointToSegment2D(member.start, wall.path[0], wall.path[1])
+      const endDistance = distancePointToSegment2D(member.end, wall.path[0], wall.path[1])
+      if (Math.max(startDistance, endDistance) > 0.12) {
+        unresolved.push({
+          id: `${member.id}-wall-centerline-drift`,
+          memberId: member.id,
+          sourceElementId: wall.id,
+          kind: 'unresolved',
+          at: member.start,
+          note: `${member.role} has drifted away from the modeled wall path and should not be trusted visually.`,
+        })
+      }
+    }
+  }
+  for (const floor of project.elements.filter((element): element is FloorElement => element.type === 'floor')) {
+    const floorMembers = framing.filter((member) => member.sourceElementId === floor.id && member.subsystem === 'floor')
+    for (const member of floorMembers) {
+      const outside = [0.25, 0.5, 0.75].some((ratio) => !pointInPolygon({
+        x: member.start.x + (member.end.x - member.start.x) * ratio,
+        y: member.start.y + (member.end.y - member.start.y) * ratio,
+      }, floor.polygon))
+      if (outside) {
+        unresolved.push({
+          id: `${member.id}-outside-floor-footprint`,
+          memberId: member.id,
+          sourceElementId: floor.id,
+          kind: 'unresolved',
+          at: member.start,
+          note: `${member.role} extends outside the modeled floor/deck footprint.`,
+        })
+      }
+    }
   }
   return unresolved
+}
+
+function distancePointToSegment2D(point: Point2, start: Point2, end: Point2): number {
+  const dx = end.x - start.x
+  const dy = end.y - start.y
+  const lengthSquared = dx * dx + dy * dy
+  if (lengthSquared < 0.000001) return distance2(point, start)
+  const t = Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared))
+  return distance2(point, { x: start.x + dx * t, y: start.y + dy * t })
 }
 
 function detectDerivedWarnings(project: ProjectDocument, framing: FramingMember[], supportGrids: SupportGrid[], unresolvedIntersections: DerivedModel['unresolvedIntersections']): RuleResult[] {
@@ -1107,36 +1429,19 @@ function detectDerivedWarnings(project: ProjectDocument, framing: FramingMember[
   }
   for (const roof of project.elements.filter((element): element is RoofElement => element.type === 'roof')) {
     const gableMembers = framing.filter((member) => member.sourceElementId === roof.id && member.role.includes('gable end stud'))
-    if (roof.roofType === 'hip') {
-      results.push({
-        id: `derived-hip-roof-${roof.id}`,
-        status: 'requiresEngineer',
-        severity: 'warning',
-        elementId: roof.id,
-        title: 'Hip roof topology not fully derived',
-        message: 'Hip roofs are accepted in the source model but still need a dedicated hip/valley topology solver before framing is construction-trustworthy.',
-        suggestion: 'Use gable or shed roof framing for this pass, or treat the hip roof as engineered/manual review.',
-        highlightTarget: { elementId: roof.id, kind: 'element' },
-        reference: {
-          standard: 'Generic roof geometry',
-          section: 'Hip roof topology',
-          url: 'https://www.iccsafe.org/products-and-services/i-codes/2018-i-codes/irc/',
-        },
-      })
-    }
     if (!isOrthogonalPolygon(roof.footprint)) {
       results.push({
         id: `derived-roof-orthogonal-${roof.id}`,
-        status: 'fail',
-        severity: 'error',
+        status: 'warning',
+        severity: 'warning',
         elementId: roof.id,
-        title: 'Unsupported roof footprint',
-        message: 'The first-pass roof framing kernel supports simple orthogonal roof footprints only.',
-        suggestion: 'Redraw this roof footprint as a simple orthogonal polygon or split it into simpler roof sections.',
+        title: 'Skewed roof footprint review',
+        message: 'The roof kernel now keeps non-orthogonal footprints, but skewed hip/valley cuts should be reviewed before purchase or permit use.',
+        suggestion: 'Inspect generated roof planes, valleys, and rendered rafter axes in the diagnostic view.',
         highlightTarget: { elementId: roof.id, kind: 'element' },
         reference: {
           standard: 'Generic roof geometry',
-          section: 'Constructible roof footprint',
+          section: 'Skewed roof topology',
           url: 'https://www.iccsafe.org/products-and-services/i-codes/2018-i-codes/irc/',
         },
       })
@@ -1220,6 +1525,8 @@ export function deriveProject(project: ProjectDocument): DerivedModel {
   const joinConditions = collectJoinConditions(framing, supportGrids)
   const unresolvedIntersections = collectUnresolvedIntersections(project, framing, supportGrids)
   const roofPlanes = generateRoofPlanes(project)
+  const roofTopologies = deriveRoofTopologies(project, roofPlanes, framing)
+  const wallSolids = deriveWallSolids(project)
   const envelopeSurfaces = deriveEnvelopeSurfaces(project)
   const layerTakeoffFragments = deriveLayerTakeoffFragments(project, envelopeSurfaces)
   const pierHeights: Record<string, number> = {}
@@ -1232,6 +1539,37 @@ export function deriveProject(project: ProjectDocument): DerivedModel {
     pierHeights[pier.id] = Math.max(0, pier.end.z - pier.start.z)
   }
 
+  // build unified derived face list (walls, floors, roof planes)
+  function centroid3(points: { x: number; y: number; z: number }[]) {
+    const total = points.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y, z: acc.z + p.z }), { x: 0, y: 0, z: 0 })
+    return { x: total.x / Math.max(points.length, 1), y: total.y / Math.max(points.length, 1), z: total.z / Math.max(points.length, 1) }
+  }
+  function computeNormal(points: { x: number; y: number; z: number }[]) {
+    if (points.length < 3) return { x: 0, y: 0, z: 1 }
+    const a = points[0]
+    const b = points[1]
+    const c = points[2]
+    const ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z
+    const vx = c.x - a.x, vy = c.y - a.y, vz = c.z - a.z
+    const nx = uy * vz - uz * vy
+    const ny = uz * vx - ux * vz
+    const nz = ux * vy - uy * vx
+    const len = Math.hypot(nx, ny, nz) || 1
+    return { x: nx / len, y: ny / len, z: nz / len }
+  }
+
+  const derivedFaces: DerivedFace[] = []
+  for (const s of wallSolids) {
+    if (s.faces && s.faces.length > 0) derivedFaces.push(...s.faces)
+  }
+  for (const floor of project.elements.filter((e): e is FloorElement => e.type === 'floor')) {
+    const topPoly = floor.polygon.map((p) => ({ x: p.x, y: p.y, z: floor.elevation ?? 0 }))
+    derivedFaces.push({ id: `${floor.id}-face-top`, sourceElementId: floor.id, kind: 'floor-top', polygon: topPoly, normal: { x: 0, y: 0, z: 1 }, center: centroid3(topPoly) })
+  }
+  for (const plane of roofPlanes) {
+    derivedFaces.push({ id: `${plane.id}-face-top`, sourceElementId: plane.sourceElementId, kind: 'roof-top', polygon: plane.polygon, normal: computeNormal(plane.polygon), center: centroid3(plane.polygon) })
+  }
+
   return {
     terrainMesh: generateTerrainMesh(project),
     terrainContours: generateTerrainContours(project),
@@ -1239,6 +1577,8 @@ export function deriveProject(project: ProjectDocument): DerivedModel {
     framingRenderables,
     pierBlocks,
     roofPlanes,
+    roofTopologies,
+    wallSolids,
     envelopeSurfaces,
     layerTakeoffFragments,
     supportGrids,
@@ -1247,6 +1587,7 @@ export function deriveProject(project: ProjectDocument): DerivedModel {
     unresolvedIntersections,
     pierHeights,
     clashes: [...detectClashes(project, framing), ...detectDerivedWarnings(project, framing, supportGrids, unresolvedIntersections)],
+    derivedFaces,
   }
 }
 

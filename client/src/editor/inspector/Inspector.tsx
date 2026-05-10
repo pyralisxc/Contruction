@@ -1,7 +1,8 @@
 import React from 'react'
 import { calculateAssemblyThickness, normalizeAssembly } from '../../bim/assembly'
 import { distance2, polygonArea, polygonBounds } from '../../bim/geometry'
-import { floorStylePresets, roofStylePresets, wallStylePresets } from '../../bim/styleCatalogs'
+import { fetchSiteIntelligence, type SiteIntelligenceResponse } from '../../bim/siteIntelligence'
+import { floorStylePresets, wallStylePresets } from '../../bim/styleCatalogs'
 import {
   BuildingElement,
   CircuitElement,
@@ -21,37 +22,45 @@ import useBimProjectStore from '../../stores/bimProjectStore'
 import { EditorDerivedData } from '../selectors'
 import { Metric, NumberField, SelectField, TextField, ToggleField } from '../ui/FormControls'
 
-type InspectorTab = 'placement' | 'dimensions' | 'assembly' | 'derived' | 'materials' | 'code'
+type InspectorTab = 'properties' | 'assembly' | 'derived' | 'materials' | 'code'
 
-export function Inspector({ project, data }: { project: ProjectDocument; data: EditorDerivedData }) {
-  const [tab, setTab] = React.useState<InspectorTab>('placement')
+export function Inspector({
+  project,
+  data,
+  onReviewFloorUpdates,
+}: {
+  project: ProjectDocument
+  data: EditorDerivedData
+  onReviewFloorUpdates: (floorId: string) => void
+}) {
+  const [tab, setTab] = React.useState<InspectorTab>('properties')
   const selected = data.selected
 
   React.useEffect(() => {
-    setTab('placement')
+    setTab('properties')
   }, [selected?.id])
 
   return (
     <aside className="inspector">
       <div className="inspector-header">
         <div>
-          <h2>Inspector</h2>
+          <h2>Properties</h2>
           <p>{selected ? `${selected.type} - ${selected.id}` : 'No element selected'}</p>
         </div>
       </div>
       <div className="inspector-tabs">
-        {(['placement', 'dimensions', 'assembly', 'derived', 'materials', 'code'] as InspectorTab[]).map((item) => (
+        {(['properties', 'assembly', 'derived', 'materials', 'code'] as InspectorTab[]).map((item) => (
           <button key={item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>
             {item[0].toUpperCase() + item.slice(1)}
           </button>
         ))}
       </div>
-      {!selected ? <EmptyInspector data={data} /> : <InspectorTabBody tab={tab} selected={selected} project={project} data={data} />}
+      {!selected ? <EmptyInspector data={data} project={project} /> : <InspectorTabBody tab={tab} selected={selected} project={project} data={data} onReviewFloorUpdates={onReviewFloorUpdates} />}
     </aside>
   )
 }
 
-function EmptyInspector({ data }: { data: EditorDerivedData }) {
+function EmptyInspector({ data, project }: { data: EditorDerivedData; project: ProjectDocument }) {
   return (
     <div className="inspector-content">
       <p>Select a floor, wall, roof, opening, fixture, circuit, pipe, or duct to edit dimensions, assemblies, materials, and code context.</p>
@@ -59,7 +68,97 @@ function EmptyInspector({ data }: { data: EditorDerivedData }) {
       <Metric label="Takeoff lines" value={String(data.takeoff.lines.length)} />
       <Metric label="Home Depot matches" value={String(data.products.length)} />
       <Metric label="Open warnings" value={String(data.rules.filter((rule) => rule.status !== 'pass').length)} tone="warn" />
+      <SiteIntelligencePanel project={project} />
     </div>
+  )
+}
+
+function SiteIntelligencePanel({ project }: { project: ProjectDocument }) {
+  const [latitude, setLatitude] = React.useState('21.3069')
+  const [longitude, setLongitude] = React.useState('-157.8583')
+  const [state, setState] = React.useState('HI')
+  const [county, setCounty] = React.useState('Honolulu')
+  const [result, setResult] = React.useState<SiteIntelligenceResponse | null>(null)
+  const [loading, setLoading] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+
+  async function runLookup() {
+    setLoading(true)
+    setError(null)
+    try {
+      const next = await fetchSiteIntelligence({
+        latitude: Number(latitude),
+        longitude: Number(longitude),
+        state,
+        county,
+        zipCode: project.suppliers.zipCode,
+      })
+      setResult(next)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Site intelligence lookup failed.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <section className="site-intelligence-panel">
+      <h3>Site Intelligence</h3>
+      <p className="muted">Open-data lookup for terrain, weather grid, climate zone, and keyed code/hazard provider readiness.</p>
+      <div className="site-intel-grid">
+        <label>
+          <span>Lat</span>
+          <input value={latitude} inputMode="decimal" onChange={(event) => setLatitude(event.target.value)} />
+        </label>
+        <label>
+          <span>Lon</span>
+          <input value={longitude} inputMode="decimal" onChange={(event) => setLongitude(event.target.value)} />
+        </label>
+        <label>
+          <span>State</span>
+          <input value={state} onChange={(event) => setState(event.target.value.toUpperCase())} />
+        </label>
+        <label>
+          <span>County</span>
+          <input value={county} onChange={(event) => setCounty(event.target.value)} />
+        </label>
+      </div>
+      <button onClick={runLookup} disabled={loading}>{loading ? 'Looking up...' : 'Lookup site data'}</button>
+      {error && <p className="site-intel-error">{error}</p>}
+      {result && (
+        <>
+          <Metric label="Elevation" value={result.elevation.elevation === null ? 'Needs survey' : `${result.elevation.elevation.toFixed(1)} ${result.elevation.unit}`} tone={result.elevation.elevation === null ? 'warn' : 'good'} />
+          <Metric label="Climate zone" value={result.climateZone.ieccZone ?? 'Manual lookup'} tone={result.climateZone.ieccZone ? 'good' : 'warn'} />
+          <Metric label="Weather grid" value={result.weather.gridId ? `${result.weather.gridId} ${result.weather.gridX},${result.weather.gridY}` : 'Unavailable'} tone={result.weather.gridId ? 'good' : 'warn'} />
+          <div className="row-list">
+            {result.providers.map((provider) => (
+              <div className="data-row" key={provider.provider}>
+                <span>{provider.provider}</span>
+                <strong>{provider.status}</strong>
+                <small>{provider.note}</small>
+              </div>
+            ))}
+          </div>
+          <h3>Advisories</h3>
+          <div className="row-list">
+            {result.advisories.map((advisory) => (
+              <div className="data-row" key={advisory}>
+                <span>{advisory}</span>
+              </div>
+            ))}
+          </div>
+          <h3>Sources</h3>
+          <div className="row-list">
+            {result.sources.map((source) => (
+              <a className="supplier-row" key={source.id} href={source.url} target="_blank" rel="noreferrer">
+                <span>{source.name}</span>
+                <strong>{source.status}</strong>
+              </a>
+            ))}
+          </div>
+        </>
+      )}
+    </section>
   )
 }
 
@@ -68,18 +167,27 @@ function InspectorTabBody({
   selected,
   project,
   data,
+  onReviewFloorUpdates,
 }: {
   tab: InspectorTab
   selected: BuildingElement
   project: ProjectDocument
   data: EditorDerivedData
+  onReviewFloorUpdates: (floorId: string) => void
 }) {
-  if (tab === 'placement') return <PlacementTab selected={selected} project={project} />
+  if (tab === 'properties') {
+    return (
+      <>
+        <PlacementTab selected={selected} project={project} />
+        <PropertiesTab selected={selected} project={project} onReviewFloorUpdates={onReviewFloorUpdates} />
+      </>
+    )
+  }
   if (tab === 'assembly') return <AssemblyTab selected={selected} project={project} />
   if (tab === 'derived') return <DerivedTab selected={selected} data={data} />
   if (tab === 'materials') return <MaterialsTab data={data} project={project} />
   if (tab === 'code') return <CodeTab data={data} project={project} />
-  return <PropertiesTab selected={selected} project={project} />
+  return null
 }
 
 function PlacementTab({ selected, project }: { selected: BuildingElement; project: ProjectDocument }) {
@@ -135,12 +243,20 @@ function PlacementTab({ selected, project }: { selected: BuildingElement; projec
   )
 }
 
-function PropertiesTab({ selected, project }: { selected: BuildingElement; project: ProjectDocument }) {
+function PropertiesTab({
+  selected,
+  project,
+  onReviewFloorUpdates,
+}: {
+  selected: BuildingElement
+  project: ProjectDocument
+  onReviewFloorUpdates: (floorId: string) => void
+}) {
   const removeElement = useBimProjectStore((state) => state.removeElement)
 
   return (
     <div className="inspector-content">
-      {selected.type === 'floor' && <FloorProperties element={selected} />}
+      {selected.type === 'floor' && <FloorProperties element={selected} onReviewFloorUpdates={onReviewFloorUpdates} />}
       {selected.type === 'wall' && <WallProperties element={selected} project={project} />}
       {selected.type === 'opening' && <OpeningProperties element={selected} project={project} />}
       {selected.type === 'roof' && <RoofProperties element={selected} />}
@@ -158,9 +274,9 @@ function PropertiesTab({ selected, project }: { selected: BuildingElement; proje
   )
 }
 
-function FloorProperties({ element }: { element: FloorElement }) {
+function FloorProperties({ element, onReviewFloorUpdates }: { element: FloorElement; onReviewFloorUpdates: (floorId: string) => void }) {
   const updateElement = useBimProjectStore((state) => state.updateElement)
-  const updateFloorBounds = useBimProjectStore((state) => state.updateFloorBounds)
+  const cleanPolygonFootprint = useBimProjectStore((state) => state.cleanPolygonFootprint)
   const bounds = polygonBounds(element.polygon)
   const width = bounds.maxX - bounds.minX
   const depth = bounds.maxY - bounds.minY
@@ -174,11 +290,14 @@ function FloorProperties({ element }: { element: FloorElement }) {
         onChange={(presetId) => {
           const preset = floorStylePresets.find((candidate) => candidate.id === presetId)
           if (preset) updateElement(element.id, preset.updates as Partial<FloorElement>)
-        }}
+      }}
       />
       <NumberField label="Elevation (ft)" value={element.elevation} onChange={(elevation) => updateElement(element.id, { elevation } as Partial<FloorElement>)} />
-      <NumberField label="Width X (ft)" value={width} onChange={(value) => updateFloorBounds(element.id, value, depth)} />
-      <NumberField label="Depth Y (ft)" value={depth} onChange={(value) => updateFloorBounds(element.id, width, value)} />
+      <Metric label="Bounding width" value={`${width.toFixed(1)} ft`} />
+      <Metric label="Bounding depth" value={`${depth.toFixed(1)} ft`} />
+      <Metric label="Vertices" value={String(element.polygon.length)} />
+      <button onClick={() => onReviewFloorUpdates(element.id)}>Review footprint updates</button>
+      <button onClick={() => cleanPolygonFootprint(element.id)}>Clean footprint points</button>
       <SelectField
         label="Joist direction"
         value={element.joistDirection}
@@ -332,15 +451,6 @@ function OpeningProperties({ element, project }: { element: OpeningElement; proj
   return (
     <>
       <SelectField
-        label="Roof preset"
-        value="custom"
-        options={[{ value: 'custom', label: 'Custom current settings' }, ...roofStylePresets.map((preset) => ({ value: preset.id, label: preset.name }))]}
-        onChange={(presetId) => {
-          const preset = roofStylePresets.find((candidate) => candidate.id === presetId)
-          if (preset) updateElement(element.id, preset.updates as Partial<RoofElement>)
-        }}
-      />
-      <SelectField
         label="Host wall"
         value={element.hostWallId}
         options={walls.map((wall) => ({ value: wall.id, label: wall.name }))}
@@ -366,7 +476,7 @@ function OpeningProperties({ element, project }: { element: OpeningElement; proj
 
 function RoofProperties({ element }: { element: RoofElement }) {
   const updateElement = useBimProjectStore((state) => state.updateElement)
-  const updateRoofFootprint = useBimProjectStore((state) => state.updateRoofFootprint)
+  const cleanPolygonFootprint = useBimProjectStore((state) => state.cleanPolygonFootprint)
   const bounds = polygonBounds(element.footprint)
   const width = bounds.maxX - bounds.minX
   const depth = bounds.maxY - bounds.minY
@@ -377,15 +487,26 @@ function RoofProperties({ element }: { element: RoofElement }) {
         value={element.roofType}
         options={[
           { value: 'gable', label: 'Gable' },
-          { value: 'hip', label: 'Hip' },
           { value: 'shed', label: 'Shed' },
+          { value: 'leanTo', label: 'Lean-to' },
+          { value: 'hip', label: 'Hip' },
+          { value: 'crossGable', label: 'Cross gable' },
+          { value: 'valley', label: 'Valley' },
+          { value: 'dormer', label: 'Dormer' },
+          { value: 'porch', label: 'Porch' },
+          { value: 'roofOverDeck', label: 'Roof over deck' },
           { value: 'flat', label: 'Flat' },
+          { value: 'lowSlope', label: 'Low slope' },
+          { value: 'gambrel', label: 'Gambrel' },
+          { value: 'mansard', label: 'Mansard' },
         ]}
         onChange={(roofType) => updateElement(element.id, { roofType } as Partial<RoofElement>)}
       />
       <NumberField label="Base elevation (ft)" value={element.baseElevation} onChange={(baseElevation) => updateElement(element.id, { baseElevation } as Partial<RoofElement>)} />
-      <NumberField label="Footprint width (ft)" value={width} onChange={(value) => updateRoofFootprint(element.id, value, depth)} />
-      <NumberField label="Footprint depth (ft)" value={depth} onChange={(value) => updateRoofFootprint(element.id, width, value)} />
+      <Metric label="Bounding width" value={`${width.toFixed(1)} ft`} />
+      <Metric label="Bounding depth" value={`${depth.toFixed(1)} ft`} />
+      <Metric label="Vertices" value={String(element.footprint.length)} />
+      <button onClick={() => cleanPolygonFootprint(element.id)}>Clean footprint points</button>
       <NumberField label="Pitch rise" value={element.pitchRise} onChange={(pitchRise) => updateElement(element.id, { pitchRise } as Partial<RoofElement>)} />
       <NumberField label="Pitch run" value={element.pitchRun} onChange={(pitchRun) => updateElement(element.id, { pitchRun } as Partial<RoofElement>)} />
       <NumberField label="Overhang (ft)" value={element.overhang} onChange={(overhang) => updateElement(element.id, { overhang } as Partial<RoofElement>)} />
@@ -678,6 +799,7 @@ function formatFeetInches(value: number): string {
 
 function DerivedTab({ selected, data }: { selected: BuildingElement; data: EditorDerivedData }) {
   const framing = data.derived.framing.filter((member) => member.sourceElementId === selected.id)
+  const wallSolid = data.derived.wallSolids.find((solid) => solid.sourceElementId === selected.id)
   const surfaces = data.derived.envelopeSurfaces.filter((surface) => surface.sourceElementId === selected.id)
   const layerFragments = data.derived.layerTakeoffFragments.filter((fragment) => fragment.sourceElementId === selected.id)
   const supportGrids = data.derived.supportGrids.filter((grid) => grid.sourceElementId === selected.id)
@@ -712,6 +834,14 @@ function DerivedTab({ selected, data }: { selected: BuildingElement; data: Edito
       <Metric label="Unresolved joins" value={String(unresolved.length)} tone={unresolved.length > 0 ? 'bad' : 'good'} />
       <Metric label="Takeoff rows" value={String(data.selectedTakeoff.length)} />
       <Metric label="Code flags" value={String(data.selectedRules.filter((rule) => rule.status !== 'pass').length)} tone={data.selectedRules.some((rule) => rule.severity === 'error') ? 'bad' : 'warn'} />
+      {wallSolid && (
+        <>
+          <h3>Wall solid</h3>
+          <Metric label="Derived thickness" value={`${(wallSolid.thickness * 12).toFixed(2)} in`} />
+          <Metric label="Opening voids" value={String(wallSolid.openingVoids.length)} />
+          <Metric label="Layer bands" value={String(wallSolid.layerBands.length)} />
+        </>
+      )}
       <h3>Orientation</h3>
       <div className="row-list">
         {Object.entries(byOrientation).map(([orientation, count]) => (
@@ -793,6 +923,77 @@ function DerivedTab({ selected, data }: { selected: BuildingElement; data: Edito
 }
 
 function MaterialsTab({ data, project }: { data: EditorDerivedData; project: ProjectDocument }) {
+  const selectedStore = useBimProjectStore((s) => s.selectedStore)
+  const addSupplierProduct = useBimProjectStore((s) => s.addSupplierProduct)
+  const addToCart = useBimProjectStore((s) => s.addToCart)
+  const [offers, setOffers] = React.useState<any[]>([])
+
+  const selectedMaterialKey = data.selectedTakeoff.map((l) => l.materialId).join('|')
+
+  React.useEffect(() => {
+    let mounted = true
+    setOffers([])
+    if (!selectedStore) return
+    const query = data.selectedTakeoff.length > 0 ? data.selectedTakeoff[0].description : ''
+    const zip = project.suppliers?.zipCode ?? ''
+    if (!query) return
+    fetch(`/api/store/stores/${encodeURIComponent(selectedStore.id)}/offers?query=${encodeURIComponent(query)}&zipCode=${encodeURIComponent(zip)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!mounted) return
+        setOffers(d.offers ?? [])
+      })
+      .catch(() => {})
+    return () => {
+      mounted = false
+    }
+  }, [selectedStore?.id, project.suppliers?.zipCode, selectedMaterialKey])
+
+  function applyOfferToProject(offer: any) {
+    const materialId = data.selectedTakeoff[0]?.materialId ?? 'unknown'
+    const product = {
+      supplier: offer.storeType === 'homeDepot' ? 'homeDepot' : 'local',
+      sku: offer.sku,
+      title: offer.title,
+      materialId,
+      unitPrice: offer.unitPrice ?? offer.price,
+      unit: offer.unit,
+      storeName: offer.storeName,
+      zipCode: project.suppliers?.zipCode ?? '',
+      availableQty: offer.quantityAvailable ?? 0,
+      productUrl: offer.productUrl ?? offer.productUrl,
+      lastUpdated: new Date().toISOString(),
+    }
+    addSupplierProduct(product as any)
+  }
+
+  async function mapMaterialAndApply() {
+    if (!selectedStore) return
+    const materialName = data.selectedTakeoff[0]?.description ?? ''
+    const materialId = data.selectedTakeoff[0]?.materialId ?? ''
+    try {
+      const resp = await fetch(`/api/store/stores/${encodeURIComponent(selectedStore.id)}/map`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ material: { id: materialId, name: materialName } }),
+      })
+      const json = await resp.json()
+      const mapping = json?.mapping
+      if (!mapping || !mapping.sku) {
+        window.alert('No mapping found for this material')
+        return
+      }
+      const offersResp = await fetch(`/api/store/stores/${encodeURIComponent(selectedStore.id)}/offers?query=${encodeURIComponent(mapping.sku)}&zipCode=${encodeURIComponent(project.suppliers.zipCode)}`)
+      const offersJson = await offersResp.json()
+      const found = (offersJson?.offers ?? [])[0]
+      if (found) applyOfferToProject(found)
+      else window.alert('Mapped SKU found but no offer returned')
+    } catch (e) {
+      console.error(e)
+      window.alert('Failed to map material')
+    }
+  }
+
   return (
     <div className="inspector-content">
       <Metric label="Selected takeoff rows" value={String(data.selectedTakeoff.length)} />
@@ -801,7 +1002,7 @@ function MaterialsTab({ data, project }: { data: EditorDerivedData; project: Pro
           <div className="data-row" key={line.id}>
             <span>{line.description}</span>
             <strong>
-              {line.quantity.toFixed(1)} {line.unit}
+              {(line.purchaseQuantity ?? line.quantity).toFixed(1)} {line.purchaseUnit ?? line.unit}
             </strong>
           </div>
         ))}
@@ -810,12 +1011,39 @@ function MaterialsTab({ data, project }: { data: EditorDerivedData; project: Pro
       <div className="row-list">
         {data.selectedProducts.length === 0 ? <p>No direct SKU match for this selection yet.</p> : null}
         {data.selectedProducts.map((product) => (
-          <a className="supplier-row" key={product.sku} href={product.productUrl} target="_blank" rel="noreferrer">
-            <span>{product.title}</span>
+          <div className="supplier-row" key={product.sku}>
+            <a href={product.productUrl} target="_blank" rel="noreferrer"><span>{product.title}</span></a>
             <strong>SKU {product.sku}</strong>
-          </a>
+            <div className="supplier-actions">
+              <button onClick={() => addToCart(product, 1)}>Add to cart</button>
+            </div>
+          </div>
         ))}
       </div>
+
+      {selectedStore && (
+        <>
+          <h3>Local Store Matches ({selectedStore.name})</h3>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button onClick={() => mapMaterialAndApply()} disabled={data.selectedTakeoff.length === 0}>Map SKU</button>
+            <small className="muted">Try server mapping of the selected material</small>
+          </div>
+          <div className="row-list">
+            {offers.length === 0 ? <p>No local matches found for this selection.</p> : null}
+            {offers.map((offer) => (
+              <div key={offer.offerId} className="supplier-row">
+                <a href={offer.productUrl} target="_blank" rel="noreferrer"><span>{offer.title}</span></a>
+                <strong>{offer.sku} — {offer.price ? `$${offer.price.toFixed(2)}` : ''}</strong>
+                <div className="supplier-actions">
+                  <button onClick={() => applyOfferToProject(offer)}>Apply SKU</button>
+                  <button onClick={() => addToCart({ supplier: 'homeDepot', sku: offer.sku, title: offer.title, materialId: data.selectedTakeoff[0]?.materialId ?? '', unitPrice: offer.unitPrice ?? offer.price, unit: offer.unit ?? 'each', storeName: offer.storeName, zipCode: project.suppliers?.zipCode ?? '', availableQty: offer.quantityAvailable ?? 0, productUrl: offer.productUrl ?? '', lastUpdated: offer.lastUpdated ?? new Date().toISOString() }, 1)}>Add to cart</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
       <h3>Global Subsystems</h3>
       {Object.entries(data.takeoff.totalsBySubsystem).map(([key, value]) => (
         <Metric key={key} label={key} value={value.toFixed(1)} />

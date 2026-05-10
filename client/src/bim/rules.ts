@@ -1,7 +1,9 @@
 import { DerivedModel, FloorElement, FramingMember, MemberOrientation, OpeningElement, Point3, ProjectDocument, RoofElement, RuleResult, StructuralMemberSpec, WallElement } from './types'
 import { validateAssemblyStacks } from './assembly'
 import { distance2, polygonBounds } from './geometry'
+import { pointInPolygon } from './framingGeometry'
 import { blockingRowsForSpan, lookupSpanLimit, purlinSpacingForRoof, rafterSlopeSpan, supportedJoistSpan } from './spanTables'
+import { rulePacks } from './rulePacks'
 
 const ircReference = {
   standard: 'Generic IRC',
@@ -33,7 +35,6 @@ export function validateProject(project: ProjectDocument, derived: DerivedModel)
   for (const element of project.elements) {
     if (element.type === 'floor') results.push(...validateFloor(element, derived))
     if (element.type === 'wall') results.push(...validateWall(project, element))
-    if (element.type === 'opening') results.push(...validateOpening(project, element))
     if (element.type === 'roof') results.push(...validateRoof(project, element, derived))
     if (element.type === 'roof' && element.pitchRise < 2) {
       results.push({
@@ -65,6 +66,15 @@ export function validateProject(project: ProjectDocument, derived: DerivedModel)
   }
 
   results.push(...validateElectrical(project), ...validateMemberOrientations(derived), ...validateMemberAxes(derived), ...validateLoadPath(project, derived), ...validateAssemblyStacks(project, derived.envelopeSurfaces), ...derived.clashes)
+
+  // Run modular rule packs (non-blocking). Packs can add domain-specific checks.
+  for (const pack of rulePacks) {
+    try {
+      results.push(...pack.validate(project, derived))
+    } catch (e) {
+      // swallow pack failures for prototype
+    }
+  }
   return results
 }
 
@@ -190,7 +200,8 @@ function countFloorBlockingRows(floor: FloorElement, derived: DerivedModel): num
 
 function validateRoof(project: ProjectDocument, roof: RoofElement, derived: DerivedModel): RuleResult[] {
   const bounds = polygonBounds(roof.footprint)
-  const run = (bounds.maxY - bounds.minY) / (roof.roofType === 'shed' || roof.roofType === 'flat' ? 1 : 2)
+  const singlePlane = roof.roofType === 'shed' || roof.roofType === 'leanTo' || roof.roofType === 'porch' || roof.roofType === 'roofOverDeck' || roof.roofType === 'flat' || roof.roofType === 'lowSlope'
+  const run = (bounds.maxY - bounds.minY) / (singlePlane ? 1 : 2)
   const rise = run * (roof.pitchRise / roof.pitchRun)
   const rawSpan = rafterSlopeSpan(run, rise)
   const spanRow = lookupSpanLimit({ use: 'roofRafter', size: roof.rafterSize, spacing: roof.rafterSpacing })
@@ -200,7 +211,7 @@ function validateRoof(project: ProjectDocument, roof: RoofElement, derived: Deri
   const purlinMode = roof.purlinMode ?? 'roofBattenNailer'
   const structuralStruts = derived.framing.filter((member) => member.sourceElementId === roof.id && member.role.includes('purlin strut')).length
   const span = purlinMode === 'structuralPurlinWithStruts' && structuralStruts > 0 ? Math.min(rawSpan, purlinSpacing) : rawSpan
-  const expectedPurlins = roof.roofType === 'shed' || roof.roofType === 'flat'
+  const expectedPurlins = singlePlane
     ? purlinMode === 'none' ? 0 : Math.max(0, Math.floor((bounds.maxY - bounds.minY) / purlinSpacing) - 1)
     : purlinMode === 'none' ? 0 : Math.max(0, Math.floor((bounds.maxY - bounds.minY) / 2 / purlinSpacing) - 1) * 2
   return [
@@ -334,7 +345,7 @@ function validateLoadPath(project: ProjectDocument, derived: DerivedModel): Rule
   }
 
   for (const wall of walls.filter((item) => item.bearing)) {
-    const supportedByFloor = floors.some((floor) => pointInsideBounds(wall.path[0], polygonBounds(floor.polygon), 0.25) && pointInsideBounds(wall.path[1], polygonBounds(floor.polygon), 0.25))
+    const supportedByFloor = floors.some((floor) => wallSegmentSupportedByFloor(wall, floor))
     const supportedByBeam = derived.framing.some((member) => member.visualRole === 'beam' && lineOverlaps(wall.path[0], wall.path[1], member.start, member.end, 1))
     if (!supportedByFloor && !supportedByBeam) {
       results.push({
@@ -352,6 +363,25 @@ function validateLoadPath(project: ProjectDocument, derived: DerivedModel): Rule
   }
 
   return results
+}
+
+function wallSegmentSupportedByFloor(wall: WallElement, floor: FloorElement): boolean {
+  if (!pointsNearSameLevel(wall, floor)) return false
+  const sampleCount = Math.max(3, Math.ceil(distance2(wall.path[0], wall.path[1]) / 4))
+  for (let index = 0; index <= sampleCount; index += 1) {
+    const ratio = index / sampleCount
+    const point = {
+      x: wall.path[0].x + (wall.path[1].x - wall.path[0].x) * ratio,
+      y: wall.path[0].y + (wall.path[1].y - wall.path[0].y) * ratio,
+    }
+    if (!pointInPolygon(point, floor.polygon)) return false
+  }
+  return true
+}
+
+function pointsNearSameLevel(wall: WallElement, floor: FloorElement): boolean {
+  if (!wall.levelId || !floor.levelId) return true
+  return wall.levelId === floor.levelId
 }
 
 function lineOverlaps(a1: { x: number; y: number }, a2: { x: number; y: number }, b1: { x: number; y: number }, b2: { x: number; y: number }, tolerance: number): boolean {
@@ -375,10 +405,6 @@ function pointToLineDistance(point: { x: number; y: number }, a: { x: number; y:
   const length = distance2(a, b)
   if (length < 0.001) return distance2(point, a)
   return Math.abs((b.y - a.y) * point.x - (b.x - a.x) * point.y + b.x * a.y - b.y * a.x) / length
-}
-
-function pointInsideBounds(point: { x: number; y: number }, bounds: ReturnType<typeof polygonBounds>, tolerance: number): boolean {
-  return point.x >= bounds.minX - tolerance && point.x <= bounds.maxX + tolerance && point.y >= bounds.minY - tolerance && point.y <= bounds.maxY + tolerance
 }
 
 function validateElectrical(project: ProjectDocument): RuleResult[] {

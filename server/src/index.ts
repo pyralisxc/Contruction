@@ -3,6 +3,9 @@ import cors from 'cors'
 import helmet from 'helmet'
 import dotenv from 'dotenv'
 import storeRoutes from './routes/storeRoutes'
+import adminRoutes from './routes/adminRoutes'
+import storeApiLimiter from './middleware/expressRateLimiter'
+import { getSiteIntelligence } from './services/siteIntelligenceService'
 import {
   addSnapshot,
   blueprintHtml,
@@ -20,6 +23,18 @@ import {
 
 dotenv.config()
 
+// Startup safety check for unofficial scrapers
+if (process.env.HOMEDPOT_MODE === 'unofficial') {
+  const allowUnofficial = process.env.ALLOW_UNOFFICIAL === 'true'
+  const isDev = process.env.NODE_ENV === 'development'
+  const hasAdminKey = Boolean(process.env.ADMIN_API_KEY)
+  if (allowUnofficial && isDev && hasAdminKey) {
+    console.warn('[startup] WARNING: HOMEDPOT_MODE=unofficial is ENABLED locally. Do NOT run this on shared, staging, or production infrastructure.')
+  } else {
+    console.warn('[startup] HOMEDPOT_MODE=unofficial detected. To enable safely set ALLOW_UNOFFICIAL=true, NODE_ENV=development, and ADMIN_API_KEY. Scrapers will remain blocked unless properly enabled.')
+  }
+}
+
 const app: Application = express()
 
 // Middleware
@@ -33,8 +48,11 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
   next()
 })
 
-// Store / supplier comparison routes
-app.use('/api/store', storeRoutes)
+// Store / supplier comparison routes (rate-limited)
+app.use('/api/store', storeApiLimiter, storeRoutes)
+
+// Admin/debug routes (requires ADMIN_API_KEY via x-admin-api-key header)
+app.use('/api/admin', adminRoutes)
 
 // Health check endpoint (defined before DB connection so it always works)
 app.get('/health', (_req: Request, res: Response) => {
@@ -79,6 +97,26 @@ app.post('/api/validate', (req: Request, res: Response) => {
 
 app.post('/api/takeoff', (req: Request, res: Response) => {
   res.json({ takeoff: generateTakeoff(req.body as ApiProjectDocument) })
+})
+
+app.post('/api/site-intelligence', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const latitude = Number(req.body?.latitude)
+    const longitude = Number(req.body?.longitude)
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      res.status(400).json({ error: 'latitude and longitude are required numbers' })
+      return
+    }
+    res.json({ siteIntelligence: await getSiteIntelligence({
+      latitude,
+      longitude,
+      state: typeof req.body?.state === 'string' ? req.body.state : undefined,
+      county: typeof req.body?.county === 'string' ? req.body.county : undefined,
+      zipCode: typeof req.body?.zipCode === 'string' ? req.body.zipCode : undefined,
+    }) })
+  } catch (error) {
+    next(error)
+  }
 })
 
 app.post('/api/suppliers/search', (req: Request, res: Response) => {

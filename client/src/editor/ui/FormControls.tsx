@@ -2,7 +2,7 @@ import React from 'react'
 
 export function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
   return (
-    <label className="field">
+    <label className="field responsive-field">
       <span>{label}</span>
       {children}
       {hint && <small>{hint}</small>}
@@ -73,10 +73,37 @@ export function ToggleField({ label, checked, onChange }: { label: string; check
 
 export function Metric({ label, value, tone = 'neutral' }: { label: string; value: string; tone?: 'neutral' | 'good' | 'warn' | 'bad' }) {
   return (
-    <div className={`metric metric-${tone}`}>
+    <div className={`metric metric-row metric-${tone}`}>
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
   )
 }
 
+export function FormGrid({ children }: { children: React.ReactNode }) {
+  return <div className="form-grid">{children}</div>
+}
+
+export function ToolSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="panel-section tool-section">
+      <h3>{title}</h3>
+      {children}
+    </section>
+  )
+}
+
+export function CommandButton({
+  children,
+  icon,
+  ...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  icon?: React.ReactNode
+}) {
+  return (
+    <button {...props} className={`command-button ${props.className ?? ''}`.trim()}>
+      {icon && <span className="command-button-icon" aria-hidden>{icon}</span>}
+      <span>{children}</span>
+    </button>
+  )
+}
