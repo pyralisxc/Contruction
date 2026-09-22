@@ -32,6 +32,12 @@ function assertRelationDoesNotExist(world: WorldDocument, relationId: string) {
   }
 }
 
+function portById(entity: WorldEntity, portId: string) {
+  const port = entity.ports.find((candidate) => candidate.id === portId)
+  if (!port) throw new WorldValidationError(`Unknown port ${portId} on entity ${entity.id}`)
+  return port
+}
+
 function applyMutation(world: WorldDocument, mutation: WorldMutation) {
   switch (mutation.kind) {
     case 'createEntity': {
@@ -69,10 +75,40 @@ function applyMutation(world: WorldDocument, mutation: WorldMutation) {
       delete entityById(world, mutation.entityId).properties[mutation.key]
       return
     }
+    case 'addPort': {
+      const entity = entityById(world, mutation.entityId)
+      if (entity.ports.some((port) => port.id === mutation.port.id)) {
+        throw new WorldValidationError(`Port already exists on ${entity.id}: ${mutation.port.id}`)
+      }
+      entity.ports.push(structuredClone(mutation.port))
+      return
+    }
+    case 'updatePort': {
+      const entity = entityById(world, mutation.entityId)
+      const port = portById(entity, mutation.portId)
+      if (mutation.updates.kind !== undefined) port.kind = mutation.updates.kind
+      if (mutation.updates.name !== undefined) port.name = mutation.updates.name
+      if (mutation.updates.properties !== undefined) {
+        port.properties = structuredClone(mutation.updates.properties)
+      }
+      return
+    }
+    case 'removePort': {
+      const entity = entityById(world, mutation.entityId)
+      portById(entity, mutation.portId)
+      entity.ports = entity.ports.filter((port) => port.id !== mutation.portId)
+      world.relations = world.relations.filter((relation) => !(
+        (relation.fromEntityId === mutation.entityId && relation.fromPortId === mutation.portId) ||
+        (relation.toEntityId === mutation.entityId && relation.toPortId === mutation.portId)
+      ))
+      return
+    }
     case 'addRelation': {
       assertRelationDoesNotExist(world, mutation.relation.id)
-      entityById(world, mutation.relation.fromEntityId)
-      entityById(world, mutation.relation.toEntityId)
+      const fromEntity = entityById(world, mutation.relation.fromEntityId)
+      const toEntity = entityById(world, mutation.relation.toEntityId)
+      if (mutation.relation.fromPortId) portById(fromEntity, mutation.relation.fromPortId)
+      if (mutation.relation.toPortId) portById(toEntity, mutation.relation.toPortId)
       world.relations.push(structuredClone(mutation.relation))
       return
     }
@@ -157,12 +193,15 @@ export function relation(
   toEntityId: string,
   provenance: Provenance,
   properties: WorldRelation['properties'] = {},
+  ports: { fromPortId?: string; toPortId?: string } = {},
 ): WorldRelation {
   return {
     id,
     kind,
     fromEntityId,
+    fromPortId: ports.fromPortId,
     toEntityId,
+    toPortId: ports.toPortId,
     provenance,
     properties,
   }
