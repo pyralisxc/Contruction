@@ -9,6 +9,10 @@ import {
   constructionCapability,
   createConceptShedTransaction,
 } from '../../../capabilities/construction/src/index'
+import {
+  createRainwaterSystemTransaction,
+  waterCapability,
+} from '../../../capabilities/water/src/index'
 import { deriveBuildGraph } from '../../../packages/build/src/index'
 import { CapabilityRegistry } from '../../../packages/capabilities/src/index'
 import {
@@ -43,6 +47,7 @@ const supplyStore = new FileSupplyObservationStore(SUPPLY_PATH)
 const proposalStore = new FileProposalStore(PROPOSAL_PATH)
 const capabilities = new CapabilityRegistry()
 capabilities.register(constructionCapability)
+capabilities.register(waterCapability)
 
 const app = createMcpExpressApp({ host: '127.0.0.1' })
 
@@ -217,6 +222,16 @@ const conceptShedInputSchema = z.object({
   origin: vec3Schema.optional(),
 })
 
+const rainwaterSystemInputSchema = z.object({
+  baseRevision: z.number().int().nonnegative(),
+  actor: actorSchema.optional(),
+  name: z.string().min(1).optional(),
+  capacityGallons: z.number().positive(),
+  pipeRunFeet: z.number().positive(),
+  targetFlowGpm: z.number().positive().optional(),
+  origin: vec3Schema.optional(),
+})
+
 function normalizeSupplyObservation(
   input: z.infer<typeof supplyObservationInputSchema>,
 ): SupplyObservation {
@@ -308,6 +323,24 @@ app.post('/api/construction/concept-shed', (req, res) => {
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Concept shed creation failed'
+    const conflict = error instanceof Error && error.name === 'WorldConflictError'
+    res.status(conflict ? 409 : 400).json({ error: message })
+  }
+})
+
+app.post('/api/water/rainwater-system', (req, res) => {
+  try {
+    const input = rainwaterSystemInputSchema.parse(req.body)
+    const actor = input.actor ?? { kind: 'human' as const, id: 'studio:local-human', label: 'Studio user' }
+    const transaction = createRainwaterSystemTransaction(input.baseRevision, input, actor)
+    const result = store.apply(transaction)
+    res.json({
+      result,
+      buildGraph: buildGraph(),
+      supplyGraph: supplyGraph(),
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Rainwater system creation failed'
     const conflict = error instanceof Error && error.name === 'WorldConflictError'
     res.status(conflict ? 409 : 400).json({ error: message })
   }
@@ -431,6 +464,57 @@ const mcpHandler = createMcpHandler(() => {
     async (input) => {
       const actor = transactionActor(input.actor)
       const proposal = createConceptShedTransaction(input.baseRevision, input, actor)
+      const preview = previewTransaction(store.snapshot(), proposal)
+      proposalStore.save(proposal)
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            proposal,
+            diff: preview.diff,
+            buildGraphPreview: deriveBuildGraph(
+              preview.previewWorld,
+              new Date().toISOString(),
+              capabilities.buildRequirementProviders(),
+            ),
+          }, null, 2),
+        }],
+      }
+    },
+  )
+
+
+  server.registerTool(
+    'water_create_rainwater_system',
+    {
+      description: 'Create a conceptual connected rainwater storage, pipe, and pump system through the Water capability.',
+      inputSchema: rainwaterSystemInputSchema,
+    },
+    async (input) => {
+      const actor = transactionActor(input.actor)
+      const transaction = createRainwaterSystemTransaction(input.baseRevision, input, actor)
+      const result = store.apply(transaction)
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            result,
+            buildGraph: buildGraph(),
+          }, null, 2),
+        }],
+      }
+    },
+  )
+
+  server.registerTool(
+    'water_propose_rainwater_system',
+    {
+      description: 'Create a reviewable rainwater-system proposal with explicit ports and fluid connections.',
+      inputSchema: rainwaterSystemInputSchema,
+    },
+    async (input) => {
+      const actor = transactionActor(input.actor)
+      const proposal = createRainwaterSystemTransaction(input.baseRevision, input, actor)
       const preview = previewTransaction(store.snapshot(), proposal)
       proposalStore.save(proposal)
       return {
