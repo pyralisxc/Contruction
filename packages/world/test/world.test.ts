@@ -150,3 +150,124 @@ test('parts can be represented as first-class child entities', () => {
 
   assert.equal(store.snapshot().entities.find((entity) => entity.id === 'mount-bolt')?.parentId, 'pump-assembly')
 })
+
+
+test('port-aware relations validate interfaces and clean up when a port is removed', () => {
+  const store = new InMemoryWorldStore()
+
+  const tank = createBoxEntity({
+    id: 'tank',
+    kind: 'water.storage',
+    name: 'Tank',
+    position: { x: 0, y: 0, z: 0 },
+    size: { x: 4, y: 4, z: 6 },
+    ports: [
+      { id: 'tank-out', kind: 'fluid.water.out', name: 'Outlet' },
+    ],
+    actor: human,
+  })
+
+  const pump = createBoxEntity({
+    id: 'pump',
+    kind: 'water.pump',
+    name: 'Pump',
+    position: { x: 5, y: 0, z: 0 },
+    size: { x: 2, y: 1, z: 1 },
+    ports: [
+      { id: 'pump-in', kind: 'fluid.water.in', name: 'Inlet' },
+    ],
+    actor: human,
+  })
+
+  store.apply(createTransaction({
+    baseRevision: 0,
+    actor: human,
+    mutations: [
+      { kind: 'createEntity', entity: tank },
+      { kind: 'createEntity', entity: pump },
+      {
+        kind: 'addRelation',
+        relation: {
+          id: 'water-link',
+          kind: 'fluid-connects',
+          fromEntityId: 'tank',
+          fromPortId: 'tank-out',
+          toEntityId: 'pump',
+          toPortId: 'pump-in',
+          properties: {},
+          provenance: {
+            origin: 'user',
+            actorId: human.id,
+            at: '2026-09-22T00:00:00.000Z',
+          },
+        },
+      },
+    ],
+  }))
+
+  assert.equal(store.snapshot().relations.length, 1)
+
+  store.apply(createTransaction({
+    baseRevision: 1,
+    actor: human,
+    mutations: [{
+      kind: 'removePort',
+      entityId: 'tank',
+      portId: 'tank-out',
+    }],
+  }))
+
+  assert.equal(store.snapshot().relations.length, 0)
+  assert.equal(store.snapshot().entities.find((entity) => entity.id === 'tank')?.ports.length, 0)
+})
+
+test('relations cannot point at ports that do not exist', () => {
+  const store = new InMemoryWorldStore()
+
+  const a = createBoxEntity({
+    id: 'a',
+    kind: 'thing',
+    name: 'A',
+    position: { x: 0, y: 0, z: 0 },
+    size: { x: 1, y: 1, z: 1 },
+    actor: human,
+  })
+  const b = createBoxEntity({
+    id: 'b',
+    kind: 'thing',
+    name: 'B',
+    position: { x: 2, y: 0, z: 0 },
+    size: { x: 1, y: 1, z: 1 },
+    actor: human,
+  })
+
+  store.apply(createTransaction({
+    baseRevision: 0,
+    actor: human,
+    mutations: [
+      { kind: 'createEntity', entity: a },
+      { kind: 'createEntity', entity: b },
+    ],
+  }))
+
+  assert.throws(() => store.apply(createTransaction({
+    baseRevision: 1,
+    actor: human,
+    mutations: [{
+      kind: 'addRelation',
+      relation: {
+        id: 'bad-link',
+        kind: 'connects',
+        fromEntityId: 'a',
+        fromPortId: 'missing',
+        toEntityId: 'b',
+        properties: {},
+        provenance: {
+          origin: 'user',
+          actorId: human.id,
+          at: '2026-09-22T00:00:00.000Z',
+        },
+      },
+    }],
+  })), WorldValidationError)
+})
