@@ -13,24 +13,29 @@ import {
 } from '../../../packages/supply/src/index'
 import {
   ActorRef,
+  FileProposalStore,
   FileWorldStore,
   PropertyValue,
+  WorldMutation,
   WorldTransaction,
   createBoxEntity,
   createEmptyWorld,
   createId,
   createTransaction,
+  previewTransaction,
 } from '../../../packages/world/src/index'
 
 const PORT = Number(process.env.PORT ?? 3000)
 const WORLD_PATH = resolve(process.env.CONTRACTOR_WORLD_PATH ?? '.data/world.json')
 const SUPPLY_PATH = resolve(process.env.CONTRACTOR_SUPPLY_PATH ?? '.data/supply-observations.json')
+const PROPOSAL_PATH = resolve(process.env.CONTRACTOR_PROPOSAL_PATH ?? '.data/proposals.json')
 
 const store = new FileWorldStore(
   WORLD_PATH,
   createEmptyWorld('Contractor Hub vNext World', 'world-vnext'),
 )
 const supplyStore = new FileSupplyObservationStore(SUPPLY_PATH)
+const proposalStore = new FileProposalStore(PROPOSAL_PATH)
 
 const app = createMcpExpressApp({ host: '127.0.0.1' })
 
@@ -42,6 +47,27 @@ function supplyGraph() {
   return deriveSupplyGraph(buildGraph(), supplyStore.list())
 }
 
+function proposalView(proposal: WorldTransaction) {
+  try {
+    const preview = previewTransaction(store.snapshot(), proposal)
+    return {
+      status: 'ready' as const,
+      proposal,
+      diff: preview.diff,
+    }
+  } catch (error) {
+    return {
+      status: 'stale-or-invalid' as const,
+      proposal,
+      error: error instanceof Error ? error.message : 'Proposal is no longer valid',
+    }
+  }
+}
+
+function proposalViews() {
+  return proposalStore.list().map(proposalView)
+}
+
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
@@ -49,7 +75,9 @@ app.get('/api/health', (_req, res) => {
     persistence: 'file',
     worldPath: WORLD_PATH,
     supplyPath: SUPPLY_PATH,
+    proposalPath: PROPOSAL_PATH,
     supplyObservationCount: supplyStore.list().length,
+    pendingProposalCount: proposalStore.list().length,
   })
 })
 
@@ -72,6 +100,12 @@ app.get('/api/supply-observations', (_req, res) => {
 app.get('/api/supply-graph', (_req, res) => {
   res.json({ supplyGraph: supplyGraph() })
 })
+
+app.get('/api/proposals', (_req, res) => {
+  res.json({ proposals: proposalViews() })
+})
+
+const propertyValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()])
 
 const actorSchema = z.object({
   kind: z.enum(['human', 'agent', 'automation', 'system']),
@@ -114,6 +148,50 @@ const supplyObservationInputSchema = z.object({
   observedAt: z.string().optional(),
 })
 
+const proposalChangeSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('createBox'),
+    entityKind: z.string().min(1),
+    name: z.string().min(1),
+    parentId: z.string().min(1).optional(),
+    position: vec3Schema,
+    size: vec3Schema,
+    properties: z.record(z.string(), propertyValueSchema).optional(),
+  }),
+  z.object({
+    kind: z.literal('moveEntity'),
+    entityId: z.string().min(1),
+    position: vec3Schema,
+  }),
+  z.object({
+    kind: z.literal('renameEntity'),
+    entityId: z.string().min(1),
+    name: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal('setProperty'),
+    entityId: z.string().min(1),
+    key: z.string().min(1),
+    value: propertyValueSchema,
+  }),
+  z.object({
+    kind: z.literal('removeProperty'),
+    entityId: z.string().min(1),
+    key: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal('removeEntity'),
+    entityId: z.string().min(1),
+  }),
+])
+
+const proposalInputSchema = z.object({
+  baseRevision: z.number().int().nonnegative(),
+  actor: actorSchema.optional(),
+  note: z.string().optional(),
+  changes: z.array(proposalChangeSchema).min(1),
+})
+
 function normalizeSupplyObservation(
   input: z.infer<typeof supplyObservationInputSchema>,
 ): SupplyObservation {
@@ -122,6 +200,74 @@ function normalizeSupplyObservation(
     id: input.id ?? createId('supply-observation'),
     observedAt: input.observedAt ?? new Date().toISOString(),
   }
+}
+
+function transactionActor(input?: ActorRef): ActorRef {
+  return input ?? { kind: 'agent', id: 'mcp:agent' }
+}
+
+function proposalTransaction(
+  input: z.infer<typeof proposalInputSchema>,
+): WorldTransaction {
+  const actor = transactionActor(input.actor)
+  const at = new Date().toISOString()
+  const mutations: WorldMutation[] = input.changes.map((change) => {
+    switch (change.kind) {
+      case 'createBox':
+        return {
+          kind: 'createEntity',
+          entity: createBoxEntity({
+            kind: change.entityKind,
+            name: change.name,
+            parentId: change.parentId,
+            position: change.position,
+            size: change.size,
+            properties: change.properties,
+            actor,
+            at,
+          }),
+        }
+      case 'moveEntity':
+        return {
+          kind: 'moveEntity',
+          entityId: change.entityId,
+          position: change.position,
+        }
+      case 'renameEntity':
+        return {
+          kind: 'renameEntity',
+          entityId: change.entityId,
+          name: change.name,
+        }
+      case 'setProperty':
+        return {
+          kind: 'setProperty',
+          entityId: change.entityId,
+          key: change.key,
+          value: change.value,
+        }
+      case 'removeProperty':
+        return {
+          kind: 'removeProperty',
+          entityId: change.entityId,
+          key: change.key,
+        }
+      case 'removeEntity':
+        return {
+          kind: 'removeEntity',
+          entityId: change.entityId,
+        }
+    }
+  })
+
+  return createTransaction({
+    id: createId('proposal'),
+    baseRevision: input.baseRevision,
+    actor,
+    mutations,
+    note: input.note,
+    at,
+  })
 }
 
 app.post('/api/supply-observations', (req, res) => {
@@ -138,6 +284,46 @@ app.post('/api/supply-observations', (req, res) => {
   }
 })
 
+app.post('/api/proposals', (req, res) => {
+  try {
+    const input = proposalInputSchema.parse(req.body)
+    const proposal = proposalTransaction(input)
+    const preview = previewTransaction(store.snapshot(), proposal)
+    proposalStore.save(proposal)
+    res.json({
+      proposal,
+      diff: preview.diff,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Proposal failed'
+    const conflict = error instanceof Error && error.name === 'WorldConflictError'
+    res.status(conflict ? 409 : 400).json({ error: message })
+  }
+})
+
+app.post('/api/proposals/:id/apply', (req, res) => {
+  try {
+    const proposal = proposalStore.get(req.params.id)
+    if (!proposal) return res.status(404).json({ error: 'Unknown proposal' })
+    const result = store.apply(proposal)
+    proposalStore.remove(proposal.id)
+    return res.json({
+      result,
+      buildGraph: buildGraph(),
+      supplyGraph: supplyGraph(),
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Proposal apply failed'
+    const conflict = error instanceof Error && error.name === 'WorldConflictError'
+    return res.status(conflict ? 409 : 400).json({ error: message })
+  }
+})
+
+app.delete('/api/proposals/:id', (req, res) => {
+  const removed = proposalStore.remove(req.params.id)
+  res.status(removed ? 200 : 404).json({ removed })
+})
+
 app.post('/api/transactions', (req, res) => {
   try {
     const transaction = req.body as WorldTransaction
@@ -152,10 +338,6 @@ app.post('/api/transactions', (req, res) => {
 
 function worldText() {
   return JSON.stringify(store.snapshot(), null, 2)
-}
-
-function transactionActor(input?: ActorRef): ActorRef {
-  return input ?? { kind: 'agent', id: 'mcp:agent' }
 }
 
 const mcpHandler = createMcpHandler(() => {
@@ -183,6 +365,70 @@ const mcpHandler = createMcpHandler(() => {
     },
     async () => ({
       content: [{ type: 'text', text: JSON.stringify(store.history(), null, 2) }],
+    }),
+  )
+
+  server.registerTool(
+    'world_list_proposals',
+    {
+      description: 'List pending World proposals with current ready/stale status and structural diffs.',
+      inputSchema: z.object({}),
+    },
+    async () => ({
+      content: [{ type: 'text', text: JSON.stringify(proposalViews(), null, 2) }],
+    }),
+  )
+
+  server.registerTool(
+    'world_propose_changes',
+    {
+      description: 'Validate and persist a reviewable multi-change proposal without mutating accepted World state.',
+      inputSchema: proposalInputSchema,
+    },
+    async (input) => {
+      const proposal = proposalTransaction(input)
+      const preview = previewTransaction(store.snapshot(), proposal)
+      proposalStore.save(proposal)
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            proposal,
+            diff: preview.diff,
+          }, null, 2),
+        }],
+      }
+    },
+  )
+
+  server.registerTool(
+    'world_apply_proposal',
+    {
+      description: 'Apply one pending proposal if its base revision is still current.',
+      inputSchema: z.object({ proposalId: z.string().min(1) }),
+    },
+    async ({ proposalId }) => {
+      const proposal = proposalStore.get(proposalId)
+      if (!proposal) throw new Error(`Unknown proposal: ${proposalId}`)
+      const result = store.apply(proposal)
+      proposalStore.remove(proposalId)
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      }
+    },
+  )
+
+  server.registerTool(
+    'world_discard_proposal',
+    {
+      description: 'Discard a pending proposal without changing accepted World state.',
+      inputSchema: z.object({ proposalId: z.string().min(1) }),
+    },
+    async ({ proposalId }) => ({
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ removed: proposalStore.remove(proposalId) }),
+      }],
     }),
   )
 
@@ -260,7 +506,7 @@ const mcpHandler = createMcpHandler(() => {
         parentId: z.string().optional(),
         position: vec3Schema,
         size: vec3Schema,
-        properties: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
+        properties: z.record(z.string(), propertyValueSchema).optional(),
       }),
     },
     async (input) => {
@@ -327,7 +573,7 @@ const mcpHandler = createMcpHandler(() => {
         actor: actorSchema.optional(),
         entityId: z.string().min(1),
         key: z.string().min(1),
-        value: z.union([z.string(), z.number(), z.boolean(), z.null()]),
+        value: propertyValueSchema,
       }),
     },
     async (input) => {
@@ -360,5 +606,6 @@ app.listen(PORT, '127.0.0.1', () => {
   console.log(`Contractor Hub vNext server listening on http://127.0.0.1:${PORT}`)
   console.log(`World persistence: ${WORLD_PATH}`)
   console.log(`Supply observations: ${SUPPLY_PATH}`)
+  console.log(`Pending proposals: ${PROPOSAL_PATH}`)
   console.log(`MCP endpoint: http://127.0.0.1:${PORT}/mcp`)
 })
