@@ -271,3 +271,81 @@ test('relations cannot point at ports that do not exist', () => {
     }],
   })), WorldValidationError)
 })
+
+
+test('runtime validation rejects malformed entities even when callers bypass factories', () => {
+  const store = new InMemoryWorldStore()
+
+  assert.throws(() => store.apply({
+    id: 'bad-entity-tx',
+    baseRevision: 0,
+    actor: human,
+    createdAt: '2026-09-22T00:00:00.000Z',
+    mutations: [{
+      kind: 'createEntity',
+      entity: {
+        id: 'bad',
+        kind: 'thing',
+        name: 'Bad geometry',
+        geometry: {
+          type: 'box',
+          position: { x: 0, y: 0, z: 0 },
+          size: { x: -1, y: 1, z: 1 },
+        },
+        properties: {},
+        ports: [],
+        provenance: {
+          origin: 'user',
+          actorId: human.id,
+          at: '2026-09-22T00:00:00.000Z',
+        },
+      },
+    }],
+  }), WorldValidationError)
+})
+
+test('runtime validation rejects duplicate port ids on direct entity input', () => {
+  const store = new InMemoryWorldStore()
+
+  assert.throws(() => store.apply({
+    id: 'duplicate-port-tx',
+    baseRevision: 0,
+    actor: human,
+    createdAt: '2026-09-22T00:00:00.000Z',
+    mutations: [{
+      kind: 'createEntity',
+      entity: {
+        id: 'bad-ports',
+        kind: 'equipment',
+        name: 'Bad ports',
+        properties: {},
+        ports: [
+          { id: 'same', kind: 'fluid.in', name: 'One' },
+          { id: 'same', kind: 'fluid.out', name: 'Two' },
+        ],
+        provenance: {
+          origin: 'user',
+          actorId: human.id,
+          at: '2026-09-22T00:00:00.000Z',
+        },
+      },
+    }],
+  }), WorldValidationError)
+})
+
+test('unknown mutation kinds fail instead of silently advancing revision', () => {
+  const store = new InMemoryWorldStore()
+  const before = store.snapshot()
+
+  assert.throws(() => store.apply({
+    id: 'unknown-mutation-tx',
+    baseRevision: 0,
+    actor: human,
+    createdAt: '2026-09-22T00:00:00.000Z',
+    mutations: [{
+      kind: 'futureMutation',
+    } as never],
+  }), WorldValidationError)
+
+  assert.deepEqual(store.snapshot(), before)
+})
