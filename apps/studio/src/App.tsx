@@ -227,6 +227,31 @@ export function App() {
     })
   }, [recordSupplyObservation])
 
+  const addConceptShed = useCallback(async () => {
+    if (!world) return
+    setStatus('Creating semantic construction shell...')
+    const response = await fetch('/api/construction/concept-shed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        baseRevision: world.revision,
+        actor: human,
+        name: 'Utility shed',
+        width: 12,
+        depth: 10,
+        wallHeight: 8,
+        origin: { x: world.entities.length * 1.5, y: world.entities.length * 0.5, z: 0 },
+      }),
+    })
+    const payload = await response.json()
+    if (!response.ok) {
+      if (response.status === 409) await loadWorld()
+      throw new Error(payload.error ?? 'Concept shed creation failed')
+    }
+    await loadWorld()
+    setStatus('Construction capability created conceptual shed')
+  }, [loadWorld, world])
+
   const addThing = useCallback(async (
     kind: string,
     name: string,
@@ -313,8 +338,8 @@ export function App() {
       </header>
 
       <section className="creation-bar">
-        <button onClick={() => addThing('structure', 'Utility shed', { x: 12, y: 10, z: 9 }, { fidelity: 'concept' })}>
-          + Utility shed
+        <button onClick={addConceptShed}>
+          + Concept shed
         </button>
         <button onClick={() => addThing('equipment.water-storage', 'Rainwater tank', { x: 5, y: 5, z: 7 }, { capacityGallons: 1000 })}>
           + Water tank
@@ -382,6 +407,7 @@ export function App() {
             <h3>Build / Supply</h3>
             <dl>
               <div><dt>requirements</dt><dd>{buildGraph?.totals.requirementCount ?? 0}</dd></div>
+              <div><dt>conceptual</dt><dd>{buildGraph?.totals.conceptualCount ?? 0}</dd></div>
               <div><dt>sourced</dt><dd>{supplyGraph?.totals.coveredCount ?? 0}</dd></div>
               <div><dt>partial</dt><dd>{supplyGraph?.totals.partialCount ?? 0}</dd></div>
               <div><dt>unsourced</dt><dd>{supplyGraph?.totals.unresolvedCount ?? 0}</dd></div>
