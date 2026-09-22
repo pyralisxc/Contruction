@@ -174,7 +174,11 @@ current canonical snapshot + revision identity + durable operation/checkpoint hi
 
 The world must not require replaying an eternal event stream for ordinary reads.
 
-The initial vNext slice uses a server-owned in-memory world deliberately. Durable project format and persistence are the next infrastructure layer once the operation contract has been exercised.
+The current vNext slice uses a server-owned file-backed world. Each accepted transaction atomically persists the latest canonical snapshot together with durable local operation history.
+
+The file format is deliberately versioned and minimal. It is a proving format, not a promise that JSON-file persistence is the final production storage architecture.
+
+Ordinary reads use the current snapshot; they do not replay the full history.
 
 ## 10. External solvers and providers
 
@@ -190,14 +194,18 @@ The first vNext slice intentionally contains:
 
 - typed World model;
 - atomic revisioned transactions;
-- in-memory server store;
+- file-backed server-owned World store;
+- durable accepted transaction history;
 - REST transaction surface for the browser;
 - MCP tools backed by the same store and transaction logic;
+- first derived Build Graph from part/material entities;
+- Build Graph REST and MCP projections;
 - minimal React studio;
 - simple 2D primitive visualization;
 - selection and inspection;
 - creation/movement through transactions;
-- hierarchy sufficient to represent parts.
+- hierarchy sufficient to represent parts;
+- visible unresolved Build Graph requirements.
 
 It intentionally does not yet restore:
 
