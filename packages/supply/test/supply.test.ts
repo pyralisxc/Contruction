@@ -71,6 +71,72 @@ test('partial quantity remains explicit', () => {
   ])
 
   assert.equal(graph.resolutions[0].status, 'partial')
+  assert.equal(graph.resolutions[0].coveredQuantity, 2)
+  assert.equal(graph.resolutions[0].shortfallQuantity, 2)
+})
+
+test('partial owned inventory combines with a local source to cover one requirement', () => {
+  const graph = deriveSupplyGraph(buildGraph, [
+    observation({
+      id: 'owned-partial',
+      sourceKind: 'inventory',
+      sourceName: 'Truck inventory',
+      quantityAvailable: 2,
+    }),
+    observation({
+      id: 'local-remainder',
+      sourceKind: 'local-trade',
+      sourceName: 'Local fastener shop',
+      quantityAvailable: 2,
+      distanceMiles: 3,
+    }),
+  ])
+
+  const resolution = graph.resolutions[0]
+  assert.equal(resolution.status, 'covered')
+  assert.equal(resolution.allocations.length, 2)
+  assert.equal(resolution.allocations[0].sourceKind, 'inventory')
+  assert.equal(resolution.coveredQuantity, 4)
+  assert.equal(resolution.shortfallQuantity, 0)
+})
+
+test('one observed stock quantity cannot be overcommitted across multiple requirements', () => {
+  const repeatedGraph: BuildGraph = {
+    ...buildGraph,
+    requirements: [
+      {
+        ...buildGraph.requirements[0],
+        id: 'requirement:a',
+      },
+      {
+        ...buildGraph.requirements[0],
+        id: 'requirement:b',
+      },
+    ],
+    totals: {
+      requirementCount: 2,
+      unresolvedCount: 2,
+      conceptualCount: 0,
+    },
+  }
+
+  const graph = deriveSupplyGraph(repeatedGraph, [{
+    id: 'shared-stock',
+    sourceId: 'inventory:bin',
+    sourceName: 'Parts bin',
+    sourceKind: 'inventory',
+    observedAt: '2026-09-22T01:00:00.000Z',
+    specification: '1/4-20 stainless',
+    quantityAvailable: 5,
+    unit: 'each',
+  }])
+
+  assert.equal(graph.resolutions[0].status, 'covered')
+  assert.equal(graph.resolutions[0].coveredQuantity, 4)
+  assert.equal(graph.resolutions[1].status, 'partial')
+  assert.equal(graph.resolutions[1].coveredQuantity, 1)
+  assert.equal(graph.resolutions[1].shortfallQuantity, 3)
+  assert.equal(graph.totals.allocatedObservationCount, 1)
 })
 
 test('similar-looking observations do not become substitutions without an explicit or exact match', () => {
