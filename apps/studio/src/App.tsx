@@ -120,6 +120,15 @@ export function App() {
     return supplyGraph.resolutions.filter((resolution) => ids.has(resolution.requirement.id))
   }, [selectedRequirements, supplyGraph])
 
+  const selectedRelations = useMemo(() => {
+    if (!world || !selected) return []
+    return world.relations.filter(
+      (relation) =>
+        relation.fromEntityId === selected.id ||
+        relation.toEntityId === selected.id,
+    )
+  }, [selected, world])
+
   const applyMutations = useCallback(async (mutations: WorldMutation[], note?: string) => {
     if (!world) return
 
@@ -252,6 +261,31 @@ export function App() {
     setStatus('Construction capability created conceptual shed')
   }, [loadWorld, world])
 
+  const addRainwaterSystem = useCallback(async () => {
+    if (!world) return
+    setStatus('Creating connected rainwater system...')
+    const response = await fetch('/api/water/rainwater-system', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        baseRevision: world.revision,
+        actor: human,
+        name: 'Rainwater system',
+        capacityGallons: 1000,
+        pipeRunFeet: 12,
+        targetFlowGpm: 5,
+        origin: { x: world.entities.length * 1.5, y: world.entities.length * 0.5, z: 0 },
+      }),
+    })
+    const payload = await response.json()
+    if (!response.ok) {
+      if (response.status === 409) await loadWorld()
+      throw new Error(payload.error ?? 'Rainwater system creation failed')
+    }
+    await loadWorld()
+    setStatus('Water capability created connected system')
+  }, [loadWorld, world])
+
   const addThing = useCallback(async (
     kind: string,
     name: string,
@@ -341,8 +375,8 @@ export function App() {
         <button onClick={addConceptShed}>
           + Concept shed
         </button>
-        <button onClick={() => addThing('equipment.water-storage', 'Rainwater tank', { x: 5, y: 5, z: 7 }, { capacityGallons: 1000 })}>
-          + Water tank
+        <button onClick={addRainwaterSystem}>
+          + Rainwater system
         </button>
         <button onClick={() => addThing('equipment', 'Generic equipment', { x: 4, y: 3, z: 4 })}>
           + Equipment
@@ -472,6 +506,29 @@ export function App() {
                     <button onClick={() => moveSelected(1, 0)}>→</button>
                     <button onClick={() => moveSelected(0, 1)}>↓</button>
                   </div>
+                </div>
+              )}
+
+              {(selected.ports.length > 0 || selectedRelations.length > 0) && (
+                <div className="detail-group">
+                  <h3>Ports / Connections</h3>
+                  {selected.ports.map((port) => (
+                    <div className="connection-row" key={port.id}>
+                      <span>{port.name}</span>
+                      <small>{port.kind}</small>
+                    </div>
+                  ))}
+                  {selectedRelations.map((relation) => {
+                    const outbound = relation.fromEntityId === selected.id
+                    const otherId = outbound ? relation.toEntityId : relation.fromEntityId
+                    const other = world.entities.find((entity) => entity.id === otherId)
+                    return (
+                      <div className="connection-row" key={relation.id}>
+                        <span>{outbound ? '→' : '←'} {other?.name ?? otherId}</span>
+                        <small>{relation.kind}</small>
+                      </div>
+                    )
+                  })}
                 </div>
               )}
 
