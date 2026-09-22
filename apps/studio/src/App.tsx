@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import type { BuildGraph } from '../../../packages/build/src/index'
+import type { BuildGraph, BuildRequirement } from '../../../packages/build/src/index'
+import type { SupplyGraph } from '../../../packages/supply/src/index'
 import {
   ActorRef,
   WorldDocument,
@@ -32,32 +33,46 @@ function entityStyle(entity: WorldEntity) {
 export function App() {
   const [world, setWorld] = useState<WorldDocument | null>(null)
   const [buildGraph, setBuildGraph] = useState<BuildGraph | null>(null)
+  const [supplyGraph, setSupplyGraph] = useState<SupplyGraph | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [status, setStatus] = useState('Connecting to world...')
 
-  const loadBuildGraph = useCallback(async () => {
-    const response = await fetch('/api/build-graph')
-    if (!response.ok) throw new Error('Could not derive Build Graph')
-    const payload = await response.json()
-    setBuildGraph(payload.buildGraph)
+  const loadDerived = useCallback(async () => {
+    const [buildResponse, supplyResponse] = await Promise.all([
+      fetch('/api/build-graph'),
+      fetch('/api/supply-graph'),
+    ])
+    if (!buildResponse.ok) throw new Error('Could not derive Build Graph')
+    if (!supplyResponse.ok) throw new Error('Could not derive Supply Graph')
+
+    const [buildPayload, supplyPayload] = await Promise.all([
+      buildResponse.json(),
+      supplyResponse.json(),
+    ])
+    setBuildGraph(buildPayload.buildGraph)
+    setSupplyGraph(supplyPayload.supplyGraph)
   }, [])
 
   const loadWorld = useCallback(async () => {
-    const [worldResponse, graphResponse] = await Promise.all([
+    const [worldResponse, buildResponse, supplyResponse] = await Promise.all([
       fetch('/api/world'),
       fetch('/api/build-graph'),
+      fetch('/api/supply-graph'),
     ])
 
     if (!worldResponse.ok) throw new Error('Could not load world')
-    if (!graphResponse.ok) throw new Error('Could not derive Build Graph')
+    if (!buildResponse.ok) throw new Error('Could not derive Build Graph')
+    if (!supplyResponse.ok) throw new Error('Could not derive Supply Graph')
 
-    const [worldPayload, graphPayload] = await Promise.all([
+    const [worldPayload, buildPayload, supplyPayload] = await Promise.all([
       worldResponse.json(),
-      graphResponse.json(),
+      buildResponse.json(),
+      supplyResponse.json(),
     ])
 
     setWorld(worldPayload.world)
-    setBuildGraph(graphPayload.buildGraph)
+    setBuildGraph(buildPayload.buildGraph)
+    setSupplyGraph(supplyPayload.supplyGraph)
     setStatus('World synchronized')
   }, [])
 
@@ -80,6 +95,12 @@ export function App() {
         requirement.parentEntityId === selected.id,
     )
   }, [buildGraph, selected])
+
+  const selectedSupply = useMemo(() => {
+    if (!supplyGraph) return []
+    const ids = new Set(selectedRequirements.map((requirement) => requirement.id))
+    return supplyGraph.resolutions.filter((resolution) => ids.has(resolution.requirement.id))
+  }, [selectedRequirements, supplyGraph])
 
   const applyMutations = useCallback(async (mutations: WorldMutation[], note?: string) => {
     if (!world) return
@@ -105,9 +126,64 @@ export function App() {
     }
 
     setWorld(payload.world)
-    await loadBuildGraph()
+    await loadDerived()
     setStatus(`Revision ${payload.revision} accepted and persisted`)
-  }, [loadBuildGraph, loadWorld, world])
+  }, [loadDerived, loadWorld, world])
+
+  const recordSupplyObservation = useCallback(async (input: Record<string, unknown>) => {
+    setStatus('Recording sourcing observation...')
+    const response = await fetch('/api/supply-observations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    })
+    const payload = await response.json()
+    if (!response.ok) throw new Error(payload.error ?? 'Supply observation failed')
+    setSupplyGraph(payload.supplyGraph)
+    setStatus('Supply Graph refreshed')
+  }, [])
+
+  const markOwned = useCallback(async (requirement: BuildRequirement) => {
+    await recordSupplyObservation({
+      sourceId: 'inventory:owned',
+      sourceName: 'Owned inventory',
+      sourceKind: 'inventory',
+      requirementId: requirement.id,
+      quantityAvailable: requirement.quantity,
+      unit: requirement.unit,
+      notes: 'Recorded manually in Studio',
+    })
+  }, [recordSupplyObservation])
+
+  const recordLocalCandidate = useCallback(async (requirement: BuildRequirement) => {
+    const sourceName = window.prompt('Local source name')
+    if (!sourceName?.trim()) return
+
+    const distanceText = window.prompt('Approximate distance in miles (optional)', '')
+    const priceText = window.prompt(`Unit price per ${requirement.unit} (optional)`, '')
+    const quantityText = window.prompt('Quantity currently available', String(requirement.quantity))
+
+    const distanceMiles = distanceText?.trim() ? Number(distanceText) : undefined
+    const unitPrice = priceText?.trim() ? Number(priceText) : undefined
+    const quantityAvailable = quantityText?.trim() ? Number(quantityText) : requirement.quantity
+
+    if (!Number.isFinite(quantityAvailable) || quantityAvailable < 0) {
+      window.alert('Quantity must be a non-negative number.')
+      return
+    }
+
+    await recordSupplyObservation({
+      sourceId: `local:${sourceName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+      sourceName: sourceName.trim(),
+      sourceKind: 'local-retail',
+      requirementId: requirement.id,
+      quantityAvailable,
+      unit: requirement.unit,
+      ...(Number.isFinite(distanceMiles) ? { distanceMiles } : {}),
+      ...(Number.isFinite(unitPrice) ? { unitPrice } : {}),
+      notes: 'Recorded manually in Studio',
+    })
+  }, [recordSupplyObservation])
 
   const addThing = useCallback(async (
     kind: string,
@@ -187,7 +263,8 @@ export function App() {
           <span>revision {world.revision}</span>
           <span>{world.entities.length} entities</span>
           <span>{buildGraph?.totals.requirementCount ?? 0} requirements</span>
-          <span>{buildGraph?.totals.unresolvedCount ?? 0} unresolved</span>
+          <span>{supplyGraph?.totals.coveredCount ?? 0} sourced</span>
+          <span>{supplyGraph?.totals.unresolvedCount ?? 0} unsourced</span>
           <span className="mcp-badge">MCP /mcp</span>
         </div>
       </header>
@@ -255,20 +332,23 @@ export function App() {
         <aside className="inspector">
           <div className="panel-heading">
             <strong>Inspect</strong>
-            <small>world → build</small>
+            <small>world → build → supply</small>
           </div>
 
           <div className="detail-group">
-            <h3>Build Graph</h3>
+            <h3>Build / Supply</h3>
             <dl>
               <div><dt>requirements</dt><dd>{buildGraph?.totals.requirementCount ?? 0}</dd></div>
-              <div><dt>unresolved sourcing</dt><dd>{buildGraph?.totals.unresolvedCount ?? 0}</dd></div>
-              <div><dt>world revision</dt><dd>{buildGraph?.worldRevision ?? world.revision}</dd></div>
+              <div><dt>sourced</dt><dd>{supplyGraph?.totals.coveredCount ?? 0}</dd></div>
+              <div><dt>partial</dt><dd>{supplyGraph?.totals.partialCount ?? 0}</dd></div>
+              <div><dt>unsourced</dt><dd>{supplyGraph?.totals.unresolvedCount ?? 0}</dd></div>
+              <div><dt>local candidates</dt><dd>{supplyGraph?.totals.localCandidateCount ?? 0}</dd></div>
+              <div><dt>owned candidates</dt><dd>{supplyGraph?.totals.ownedCandidateCount ?? 0}</dd></div>
             </dl>
           </div>
 
           {!selected ? (
-            <p className="empty-copy">Select a thing to inspect its current world truth and build requirements.</p>
+            <p className="empty-copy">Select a thing to inspect its world truth, build requirements, and sourcing state.</p>
           ) : (
             <>
               <div className="identity-card">
@@ -320,16 +400,39 @@ export function App() {
               {selectedRequirements.length > 0 && (
                 <div className="detail-group">
                   <h3>Required to build</h3>
-                  {selectedRequirements.map((requirement) => (
-                    <button
-                      className="child-part"
-                      key={requirement.id}
-                      onClick={() => setSelectedId(requirement.sourceEntityId)}
-                    >
-                      <span>{requirement.quantity} {requirement.unit} · {requirement.name}</span>
-                      <small>{requirement.acquisition} · {requirement.specification ?? 'specification open'}</small>
-                    </button>
-                  ))}
+                  {selectedRequirements.map((requirement) => {
+                    const supply = selectedSupply.find(
+                      (resolution) => resolution.requirement.id === requirement.id,
+                    )
+                    return (
+                      <div className="requirement-card" key={requirement.id}>
+                        <button
+                          className="requirement-select"
+                          onClick={() => setSelectedId(requirement.sourceEntityId)}
+                        >
+                          <span>{requirement.quantity} {requirement.unit} · {requirement.name}</span>
+                          <small>{requirement.specification ?? 'specification open'}</small>
+                        </button>
+                        <div className="requirement-status">
+                          <strong>{supply?.status ?? 'unresolved'}</strong>
+                          {supply?.preferredCandidate ? (
+                            <small>
+                              {supply.preferredCandidate.sourceName}
+                              {typeof supply.preferredCandidate.distanceMiles === 'number'
+                                ? ` · ${supply.preferredCandidate.distanceMiles} mi`
+                                : ''}
+                            </small>
+                          ) : (
+                            <small>No source observation yet</small>
+                          )}
+                        </div>
+                        <div className="requirement-actions">
+                          <button onClick={() => markOwned(requirement)}>Owned</button>
+                          <button onClick={() => recordLocalCandidate(requirement)}>+ Local source</button>
+                        </div>
+                      </div>
+                    )
+                  })}
                 </div>
               )}
 
