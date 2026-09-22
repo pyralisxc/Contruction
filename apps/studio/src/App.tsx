@@ -129,6 +129,11 @@ export function App() {
     )
   }, [selected, world])
 
+  const selectedPowerPort = useMemo(
+    () => selected?.ports.find((port) => port.kind === 'electrical.power.in') ?? null,
+    [selected],
+  )
+
   const applyMutations = useCallback(async (mutations: WorldMutation[], note?: string) => {
     if (!world) return
 
@@ -286,6 +291,36 @@ export function App() {
     setStatus('Water capability created connected system')
   }, [loadWorld, world])
 
+  const addSolarMicrogrid = useCallback(async () => {
+    if (!world) return
+    setStatus(selectedPowerPort ? 'Creating solar microgrid and connecting selected load...' : 'Creating solar microgrid...')
+    const response = await fetch('/api/energy/solar-microgrid', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        baseRevision: world.revision,
+        actor: human,
+        name: 'Solar microgrid',
+        panelCount: 6,
+        panelWatts: 400,
+        batteryKwh: 10,
+        inverterKw: 5,
+        origin: { x: world.entities.length * 1.5, y: world.entities.length * 0.5, z: 0 },
+        ...(selected && selectedPowerPort ? {
+          loadEntityId: selected.id,
+          loadPortId: selectedPowerPort.id,
+        } : {}),
+      }),
+    })
+    const payload = await response.json()
+    if (!response.ok) {
+      if (response.status === 409) await loadWorld()
+      throw new Error(payload.error ?? 'Solar microgrid creation failed')
+    }
+    await loadWorld()
+    setStatus(selectedPowerPort ? 'Energy capability connected microgrid to selected load' : 'Energy capability created microgrid')
+  }, [loadWorld, selected, selectedPowerPort, world])
+
   const addThing = useCallback(async (
     kind: string,
     name: string,
@@ -377,6 +412,9 @@ export function App() {
         </button>
         <button onClick={addRainwaterSystem}>
           + Rainwater system
+        </button>
+        <button onClick={addSolarMicrogrid}>
+          + Solar microgrid{selectedPowerPort ? ' → selected load' : ''}
         </button>
         <button onClick={() => addThing('equipment', 'Generic equipment', { x: 4, y: 3, z: 4 })}>
           + Equipment
