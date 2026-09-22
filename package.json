@@ -1,22 +1,37 @@
 {
-  "name": "contruction",
-  "version": "1.0.0",
+  "name": "contractor-hub-vnext",
+  "version": "0.1.0",
   "private": true,
-  "description": "A full-stack 3D construction design platform built with React, Three.js, and Node.js.",
-  "scripts": {
-    "dev": "concurrently \"npm run dev:client\" \"npm run dev:server\"",
-    "dev:client": "cd client && npm run dev",
-    "dev:server": "cd server && npm run dev",
-    "build": "cd client && npm run build && cd ../server && npm run build",
-    "install:all": "cd client && npm install && cd ../server && npm install",
-    "test": "cd server && npx tsx ../tests/geometry.test.ts",
-    "test:robots": "cd server && npx tsx ../tests/robots.test.ts",
-    "setup-githooks": "git config core.hooksPath .githooks || true && chmod +x .githooks/* || true"
+  "type": "module",
+  "engines": {
+    "node": ">=22"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:studio\"",
+    "dev:server": "tsx apps/server/src/index.ts",
+    "dev:studio": "vite --config apps/studio/vite.config.ts",
+    "test": "node --import tsx --test packages/world/test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "npm run typecheck && vite build --config apps/studio/vite.config.ts",
+    "verify": "npm run test && npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/express": "2.0.0",
+    "@modelcontextprotocol/node": "2.0.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "express": "5.2.1",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "zod": "4.6.5"
+  },
   "devDependencies": {
-    "concurrently": "^9.2.1"
+    "@types/express": "5.0.6",
+    "@types/node": "22.20.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "^19.0.0",
+    "concurrently": "10.0.5",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vite": "8.3.0"
   }
 }
