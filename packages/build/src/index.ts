@@ -1,6 +1,7 @@
 import { WorldDocument, WorldEntity } from '../../world/src/index'
 
 export type RequirementKind = 'part' | 'material' | 'consumable' | 'equipment' | 'unknown'
+export type RequirementConfidence = 'conceptual' | 'estimated' | 'specified' | 'verified'
 
 export interface BuildRequirement {
   id: string
@@ -12,6 +13,16 @@ export interface BuildRequirement {
   quantity: number
   unit: string
   acquisition: 'unresolved' | 'buy' | 'fabricate' | 'reuse' | 'owned'
+  confidence?: RequirementConfidence
+  basis?: string
+  assumptions?: string[]
+  capabilityId?: string
+}
+
+export interface BuildRequirementProvider {
+  id: string
+  capabilityId: string
+  derive: (world: WorldDocument) => BuildRequirement[]
 }
 
 export interface BuildGraph {
@@ -22,6 +33,7 @@ export interface BuildGraph {
   totals: {
     requirementCount: number
     unresolvedCount: number
+    conceptualCount: number
   }
 }
 
@@ -49,11 +61,8 @@ function acquisition(entity: WorldEntity): BuildRequirement['acquisition'] {
   return 'unresolved'
 }
 
-export function deriveBuildGraph(
-  world: WorldDocument,
-  generatedAt = new Date().toISOString(),
-): BuildGraph {
-  const requirements = world.entities.flatMap<BuildRequirement>((entity) => {
+function explicitRequirements(world: WorldDocument): BuildRequirement[] {
+  return world.entities.flatMap<BuildRequirement>((entity) => {
     const kind = requirementKind(entity)
     if (!kind) return []
 
@@ -67,8 +76,36 @@ export function deriveBuildGraph(
       quantity: Math.max(0, numberProperty(entity, 'quantity', 1)),
       unit: stringProperty(entity, 'unit') ?? 'each',
       acquisition: acquisition(entity),
+      confidence: stringProperty(entity, 'requirementConfidence') as RequirementConfidence | undefined,
+      basis: stringProperty(entity, 'requirementBasis'),
     }]
   })
+}
+
+function assertUniqueRequirementIds(requirements: BuildRequirement[]) {
+  const ids = new Set<string>()
+  for (const requirement of requirements) {
+    if (ids.has(requirement.id)) {
+      throw new Error(`Duplicate Build requirement id: ${requirement.id}`)
+    }
+    ids.add(requirement.id)
+  }
+}
+
+export function deriveBuildGraph(
+  world: WorldDocument,
+  generatedAt = new Date().toISOString(),
+  providers: BuildRequirementProvider[] = [],
+): BuildGraph {
+  const requirements = [
+    ...explicitRequirements(world),
+    ...providers.flatMap((provider) => provider.derive(world).map((requirement) => ({
+      ...requirement,
+      capabilityId: requirement.capabilityId ?? provider.capabilityId,
+    }))),
+  ]
+
+  assertUniqueRequirementIds(requirements)
 
   return {
     worldId: world.id,
@@ -78,6 +115,7 @@ export function deriveBuildGraph(
     totals: {
       requirementCount: requirements.length,
       unresolvedCount: requirements.filter((requirement) => requirement.acquisition === 'unresolved').length,
+      conceptualCount: requirements.filter((requirement) => requirement.confidence === 'conceptual').length,
     },
   }
 }
