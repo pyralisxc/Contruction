@@ -372,3 +372,62 @@ dd {
     margin: 3px 0 0;
   }
 }
+
+
+.requirement-card {
+  border: 1px solid #252e3a;
+  border-radius: 8px;
+  padding: 9px;
+  margin-top: 8px;
+  display: grid;
+  gap: 8px;
+  background: #11161d;
+}
+
+.requirement-select {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  display: grid;
+  gap: 2px;
+}
+
+.requirement-select small,
+.requirement-status small {
+  color: #738199;
+}
+
+.requirement-status {
+  display: grid;
+  gap: 2px;
+}
+
+.requirement-status strong {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #9bd5c6;
+}
+
+.requirement-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.requirement-actions button {
+  border: 1px solid #344050;
+  background: #171c24;
+  border-radius: 7px;
+  padding: 6px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.requirement-actions button:hover {
+  background: #202733;
+  border-color: #526176;
+}
