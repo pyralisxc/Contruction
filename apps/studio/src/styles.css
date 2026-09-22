@@ -460,3 +460,20 @@ dd {
   cursor: not-allowed;
   opacity: 0.45;
 }
+
+
+.connection-row {
+  border: 1px solid #252e3a;
+  border-radius: 7px;
+  padding: 8px;
+  margin-top: 6px;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.connection-row small {
+  color: #738199;
+  text-align: right;
+}
