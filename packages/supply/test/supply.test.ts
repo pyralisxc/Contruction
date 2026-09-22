@@ -22,6 +22,7 @@ const buildGraph: BuildGraph = {
   totals: {
     requirementCount: 1,
     unresolvedCount: 1,
+    conceptualCount: 0,
   },
 }
 
