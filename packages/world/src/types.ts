@@ -57,7 +57,9 @@ export interface WorldRelation {
   id: RelationId
   kind: string
   fromEntityId: EntityId
+  fromPortId?: string
   toEntityId: EntityId
+  toPortId?: string
   properties: PropertyBag
   provenance: Provenance
 }
@@ -111,6 +113,22 @@ export type WorldMutation =
       kind: 'removeProperty'
       entityId: EntityId
       key: string
+    }
+  | {
+      kind: 'addPort'
+      entityId: EntityId
+      port: Port
+    }
+  | {
+      kind: 'updatePort'
+      entityId: EntityId
+      portId: string
+      updates: Partial<Pick<Port, 'kind' | 'name' | 'properties'>>
+    }
+  | {
+      kind: 'removePort'
+      entityId: EntityId
+      portId: string
     }
   | {
       kind: 'addRelation'
