@@ -7,24 +7,40 @@ import * as z from 'zod/v4'
 
 import { deriveBuildGraph } from '../../../packages/build/src/index'
 import {
+  FileSupplyObservationStore,
+  SupplyObservation,
+  deriveSupplyGraph,
+} from '../../../packages/supply/src/index'
+import {
   ActorRef,
   FileWorldStore,
   PropertyValue,
   WorldTransaction,
   createBoxEntity,
   createEmptyWorld,
+  createId,
   createTransaction,
 } from '../../../packages/world/src/index'
 
 const PORT = Number(process.env.PORT ?? 3000)
 const WORLD_PATH = resolve(process.env.CONTRACTOR_WORLD_PATH ?? '.data/world.json')
+const SUPPLY_PATH = resolve(process.env.CONTRACTOR_SUPPLY_PATH ?? '.data/supply-observations.json')
 
 const store = new FileWorldStore(
   WORLD_PATH,
   createEmptyWorld('Contractor Hub vNext World', 'world-vnext'),
 )
+const supplyStore = new FileSupplyObservationStore(SUPPLY_PATH)
 
 const app = createMcpExpressApp({ host: '127.0.0.1' })
+
+function buildGraph() {
+  return deriveBuildGraph(store.snapshot())
+}
+
+function supplyGraph() {
+  return deriveSupplyGraph(buildGraph(), supplyStore.list())
+}
 
 app.get('/api/health', (_req, res) => {
   res.json({
@@ -32,6 +48,8 @@ app.get('/api/health', (_req, res) => {
     revision: store.snapshot().revision,
     persistence: 'file',
     worldPath: WORLD_PATH,
+    supplyPath: SUPPLY_PATH,
+    supplyObservationCount: supplyStore.list().length,
   })
 })
 
@@ -44,19 +62,15 @@ app.get('/api/history', (_req, res) => {
 })
 
 app.get('/api/build-graph', (_req, res) => {
-  res.json({ buildGraph: deriveBuildGraph(store.snapshot()) })
+  res.json({ buildGraph: buildGraph() })
 })
 
-app.post('/api/transactions', (req, res) => {
-  try {
-    const transaction = req.body as WorldTransaction
-    const result = store.apply(transaction)
-    res.json(result)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Transaction failed'
-    const conflict = error instanceof Error && error.name === 'WorldConflictError'
-    res.status(conflict ? 409 : 400).json({ error: message })
-  }
+app.get('/api/supply-observations', (_req, res) => {
+  res.json({ observations: supplyStore.list() })
+})
+
+app.get('/api/supply-graph', (_req, res) => {
+  res.json({ supplyGraph: supplyGraph() })
 })
 
 const actorSchema = z.object({
@@ -69,6 +83,71 @@ const vec3Schema = z.object({
   x: z.number(),
   y: z.number(),
   z: z.number(),
+})
+
+const supplySourceKindSchema = z.enum([
+  'inventory',
+  'reuse',
+  'local-retail',
+  'local-trade',
+  'local-fabricator',
+  'regional',
+  'online',
+  'self-fabrication',
+])
+
+const supplyObservationInputSchema = z.object({
+  id: z.string().min(1).optional(),
+  sourceId: z.string().min(1),
+  sourceName: z.string().min(1),
+  sourceKind: supplySourceKindSchema,
+  requirementId: z.string().min(1).optional(),
+  specification: z.string().optional(),
+  name: z.string().optional(),
+  quantityAvailable: z.number().nonnegative(),
+  unit: z.string().min(1),
+  unitPrice: z.number().nonnegative().optional(),
+  distanceMiles: z.number().nonnegative().optional(),
+  leadTimeDays: z.number().nonnegative().optional(),
+  fabricationMethod: z.string().optional(),
+  notes: z.string().optional(),
+  observedAt: z.string().optional(),
+})
+
+function normalizeSupplyObservation(
+  input: z.infer<typeof supplyObservationInputSchema>,
+): SupplyObservation {
+  return {
+    ...input,
+    id: input.id ?? createId('supply-observation'),
+    observedAt: input.observedAt ?? new Date().toISOString(),
+  }
+}
+
+app.post('/api/supply-observations', (req, res) => {
+  try {
+    const parsed = supplyObservationInputSchema.parse(req.body)
+    const observation = supplyStore.record(normalizeSupplyObservation(parsed))
+    res.json({
+      observation,
+      supplyGraph: supplyGraph(),
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Supply observation failed'
+    res.status(400).json({ error: message })
+  }
+})
+
+app.post('/api/transactions', (req, res) => {
+  try {
+    const transaction = req.body as WorldTransaction
+    const result = store.apply(transaction)
+    res.json(result)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Transaction failed'
+    const conflict = error instanceof Error && error.name === 'WorldConflictError'
+    res.status(conflict ? 409 : 400).json({ error: message })
+  }
 })
 
 function worldText() {
@@ -116,9 +195,57 @@ const mcpHandler = createMcpHandler(() => {
     async () => ({
       content: [{
         type: 'text',
-        text: JSON.stringify(deriveBuildGraph(store.snapshot()), null, 2),
+        text: JSON.stringify(buildGraph(), null, 2),
       }],
     }),
+  )
+
+  server.registerTool(
+    'supply_graph',
+    {
+      description: 'Derive local-first sourcing resolutions from the Build Graph and current supply observations.',
+      inputSchema: z.object({}),
+    },
+    async () => ({
+      content: [{
+        type: 'text',
+        text: JSON.stringify(supplyGraph(), null, 2),
+      }],
+    }),
+  )
+
+  server.registerTool(
+    'supply_observations',
+    {
+      description: 'Read current timestamped inventory, local supplier, fabrication, regional, and online observations.',
+      inputSchema: z.object({}),
+    },
+    async () => ({
+      content: [{
+        type: 'text',
+        text: JSON.stringify(supplyStore.list(), null, 2),
+      }],
+    }),
+  )
+
+  server.registerTool(
+    'supply_record_observation',
+    {
+      description: 'Record a timestamped sourcing observation without mutating canonical World design truth.',
+      inputSchema: supplyObservationInputSchema,
+    },
+    async (input) => {
+      const observation = supplyStore.record(normalizeSupplyObservation(input))
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            observation,
+            supplyGraph: supplyGraph(),
+          }, null, 2),
+        }],
+      }
+    },
   )
 
   server.registerTool(
@@ -232,5 +359,6 @@ app.all('/mcp', (req, res) => void nodeMcpHandler(req, res, req.body))
 app.listen(PORT, '127.0.0.1', () => {
   console.log(`Contractor Hub vNext server listening on http://127.0.0.1:${PORT}`)
   console.log(`World persistence: ${WORLD_PATH}`)
+  console.log(`Supply observations: ${SUPPLY_PATH}`)
   console.log(`MCP endpoint: http://127.0.0.1:${PORT}/mcp`)
 })
