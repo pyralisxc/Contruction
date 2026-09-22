@@ -5,7 +5,12 @@ import { toNodeHandler } from '@modelcontextprotocol/node'
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
 import * as z from 'zod/v4'
 
+import {
+  constructionCapability,
+  createConceptShedTransaction,
+} from '../../../capabilities/construction/src/index'
 import { deriveBuildGraph } from '../../../packages/build/src/index'
+import { CapabilityRegistry } from '../../../packages/capabilities/src/index'
 import {
   FileSupplyObservationStore,
   SupplyObservation,
@@ -36,11 +41,17 @@ const store = new FileWorldStore(
 )
 const supplyStore = new FileSupplyObservationStore(SUPPLY_PATH)
 const proposalStore = new FileProposalStore(PROPOSAL_PATH)
+const capabilities = new CapabilityRegistry()
+capabilities.register(constructionCapability)
 
 const app = createMcpExpressApp({ host: '127.0.0.1' })
 
 function buildGraph() {
-  return deriveBuildGraph(store.snapshot())
+  return deriveBuildGraph(
+    store.snapshot(),
+    new Date().toISOString(),
+    capabilities.buildRequirementProviders(),
+  )
 }
 
 function supplyGraph() {
@@ -103,6 +114,10 @@ app.get('/api/supply-graph', (_req, res) => {
 
 app.get('/api/proposals', (_req, res) => {
   res.json({ proposals: proposalViews() })
+})
+
+app.get('/api/capabilities', (_req, res) => {
+  res.json({ capabilities: capabilities.list() })
 })
 
 const propertyValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()])
@@ -192,6 +207,16 @@ const proposalInputSchema = z.object({
   changes: z.array(proposalChangeSchema).min(1),
 })
 
+const conceptShedInputSchema = z.object({
+  baseRevision: z.number().int().nonnegative(),
+  actor: actorSchema.optional(),
+  name: z.string().min(1).optional(),
+  width: z.number().positive(),
+  depth: z.number().positive(),
+  wallHeight: z.number().positive(),
+  origin: vec3Schema.optional(),
+})
+
 function normalizeSupplyObservation(
   input: z.infer<typeof supplyObservationInputSchema>,
 ): SupplyObservation {
@@ -270,6 +295,24 @@ function proposalTransaction(
   })
 }
 
+app.post('/api/construction/concept-shed', (req, res) => {
+  try {
+    const input = conceptShedInputSchema.parse(req.body)
+    const actor = input.actor ?? { kind: 'human' as const, id: 'studio:local-human', label: 'Studio user' }
+    const transaction = createConceptShedTransaction(input.baseRevision, input, actor)
+    const result = store.apply(transaction)
+    res.json({
+      result,
+      buildGraph: buildGraph(),
+      supplyGraph: supplyGraph(),
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Concept shed creation failed'
+    const conflict = error instanceof Error && error.name === 'WorldConflictError'
+    res.status(conflict ? 409 : 400).json({ error: message })
+  }
+})
+
 app.post('/api/supply-observations', (req, res) => {
   try {
     const parsed = supplyObservationInputSchema.parse(req.body)
@@ -345,6 +388,67 @@ const mcpHandler = createMcpHandler(() => {
     name: 'contractor-hub-vnext',
     version: '0.1.0',
   })
+
+  server.registerTool(
+    'capabilities_list',
+    {
+      description: 'List registered Contractor Hub capability packs and their current contribution surface.',
+      inputSchema: z.object({}),
+    },
+    async () => ({
+      content: [{ type: 'text', text: JSON.stringify(capabilities.list(), null, 2) }],
+    }),
+  )
+
+  server.registerTool(
+    'construction_create_concept_shed',
+    {
+      description: 'Create a conceptual shed shell through the Construction capability and canonical World transaction path.',
+      inputSchema: conceptShedInputSchema,
+    },
+    async (input) => {
+      const actor = transactionActor(input.actor)
+      const transaction = createConceptShedTransaction(input.baseRevision, input, actor)
+      const result = store.apply(transaction)
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            result,
+            buildGraph: buildGraph(),
+          }, null, 2),
+        }],
+      }
+    },
+  )
+
+  server.registerTool(
+    'construction_propose_concept_shed',
+    {
+      description: 'Create a reviewable conceptual shed proposal without mutating accepted World state.',
+      inputSchema: conceptShedInputSchema,
+    },
+    async (input) => {
+      const actor = transactionActor(input.actor)
+      const proposal = createConceptShedTransaction(input.baseRevision, input, actor)
+      const preview = previewTransaction(store.snapshot(), proposal)
+      proposalStore.save(proposal)
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            proposal,
+            diff: preview.diff,
+            buildGraphPreview: deriveBuildGraph(
+              preview.previewWorld,
+              new Date().toISOString(),
+              capabilities.buildRequirementProviders(),
+            ),
+          }, null, 2),
+        }],
+      }
+    },
+  )
 
   server.registerTool(
     'world_snapshot',
