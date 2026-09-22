@@ -1,6 +1,7 @@
 import {
   ActorRef,
   BoxGeometry,
+  Port,
   PropertyBag,
   WorldEntity,
   WorldTransaction,
@@ -21,6 +22,7 @@ export function createBoxEntity(input: {
   size: BoxGeometry['size']
   parentId?: string
   properties?: PropertyBag
+  ports?: Port[]
   actor: ActorRef
   at?: string
 }): WorldEntity {
@@ -36,7 +38,7 @@ export function createBoxEntity(input: {
       size: structuredClone(input.size),
     },
     properties: structuredClone(input.properties ?? {}),
-    ports: [],
+    ports: structuredClone(input.ports ?? []),
     provenance: {
       origin:
         input.actor.kind === 'human'
