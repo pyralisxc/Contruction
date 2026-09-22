@@ -10,11 +10,12 @@ This branch is a generation reset. The previous BIM-lite prototype is preserved 
 
 The first vNext slice proves the new ownership model:
 
-- one server-owned World;
+- one server-owned, file-persisted World;
 - typed entities, primitive geometry, hierarchy, properties, ports, relations, and provenance;
-- atomic revision-checked transactions;
+- atomic revision-checked transactions with durable local history;
+- a first derived Build Graph for required parts and materials;
 - a minimal browser Studio;
-- an MCP endpoint;
+- an MCP endpoint with world, history, and Build Graph tools;
 - browser and MCP using the same World store and mutation contracts.
 
 The UI is intentionally small. Current implementation depth must not be mistaken for product scope.
@@ -49,7 +50,8 @@ apps/
   server/     shared REST + MCP command surface
   studio/     deliberately small human creation surface
 packages/
-  world/      canonical world types, operations, and store
+  world/      canonical world types, operations, persistence, and store
+  build/      derived Build Graph requirements
 ```
 
 The architecture is expected to change rapidly while Product Truth remains stable.
