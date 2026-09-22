@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { deriveBuildGraph } from '../../packages/build/src/index'
-import { CapabilityRegistry } from '../../packages/capabilities/src/index'
+import { deriveBuildGraph } from '../../../packages/build/src/index'
+import { CapabilityRegistry } from '../../../packages/capabilities/src/index'
 import {
   InMemoryWorldStore,
   createEmptyWorld,
-} from '../../packages/world/src/index'
+} from '../../../packages/world/src/index'
 import {
   constructionCapability,
   createConceptShedTransaction,
