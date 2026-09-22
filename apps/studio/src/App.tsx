@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
+import type { BuildGraph } from '../../../packages/build/src/index'
 import {
   ActorRef,
   WorldDocument,
@@ -30,13 +31,33 @@ function entityStyle(entity: WorldEntity) {
 
 export function App() {
   const [world, setWorld] = useState<WorldDocument | null>(null)
+  const [buildGraph, setBuildGraph] = useState<BuildGraph | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [status, setStatus] = useState('Connecting to world...')
 
-  const loadWorld = useCallback(async () => {
-    const response = await fetch('/api/world')
+  const loadBuildGraph = useCallback(async () => {
+    const response = await fetch('/api/build-graph')
+    if (!response.ok) throw new Error('Could not derive Build Graph')
     const payload = await response.json()
-    setWorld(payload.world)
+    setBuildGraph(payload.buildGraph)
+  }, [])
+
+  const loadWorld = useCallback(async () => {
+    const [worldResponse, graphResponse] = await Promise.all([
+      fetch('/api/world'),
+      fetch('/api/build-graph'),
+    ])
+
+    if (!worldResponse.ok) throw new Error('Could not load world')
+    if (!graphResponse.ok) throw new Error('Could not derive Build Graph')
+
+    const [worldPayload, graphPayload] = await Promise.all([
+      worldResponse.json(),
+      graphResponse.json(),
+    ])
+
+    setWorld(worldPayload.world)
+    setBuildGraph(graphPayload.buildGraph)
     setStatus('World synchronized')
   }, [])
 
@@ -50,6 +71,15 @@ export function App() {
     () => world?.entities.find((entity) => entity.id === selectedId) ?? null,
     [selectedId, world],
   )
+
+  const selectedRequirements = useMemo(() => {
+    if (!buildGraph || !selected) return []
+    return buildGraph.requirements.filter(
+      (requirement) =>
+        requirement.sourceEntityId === selected.id ||
+        requirement.parentEntityId === selected.id,
+    )
+  }, [buildGraph, selected])
 
   const applyMutations = useCallback(async (mutations: WorldMutation[], note?: string) => {
     if (!world) return
@@ -75,8 +105,9 @@ export function App() {
     }
 
     setWorld(payload.world)
-    setStatus(`Revision ${payload.revision} accepted`)
-  }, [loadWorld, world])
+    await loadBuildGraph()
+    setStatus(`Revision ${payload.revision} accepted and persisted`)
+  }, [loadBuildGraph, loadWorld, world])
 
   const addThing = useCallback(async (
     kind: string,
@@ -108,8 +139,10 @@ export function App() {
       position: selected.geometry?.position ?? { x: 0, y: 0, z: 0 },
       size: { x: 0.4, y: 0.4, z: 0.4 },
       properties: {
-        status: 'requirement',
-        sourcing: 'unresolved',
+        specification: 'unspecified',
+        quantity: 1,
+        unit: 'each',
+        acquisition: 'unresolved',
       },
       actor: human,
     })
@@ -153,6 +186,8 @@ export function App() {
         <div className="world-meta">
           <span>revision {world.revision}</span>
           <span>{world.entities.length} entities</span>
+          <span>{buildGraph?.totals.requirementCount ?? 0} requirements</span>
+          <span>{buildGraph?.totals.unresolvedCount ?? 0} unresolved</span>
           <span className="mcp-badge">MCP /mcp</span>
         </div>
       </header>
@@ -174,7 +209,7 @@ export function App() {
         <aside className="world-tree">
           <div className="panel-heading">
             <strong>World</strong>
-            <small>simple surface</small>
+            <small>persistent truth</small>
           </div>
           {world.entities.length === 0 ? (
             <p className="empty-copy">Create the first physical thing. The interface is intentionally sparse.</p>
@@ -220,10 +255,20 @@ export function App() {
         <aside className="inspector">
           <div className="panel-heading">
             <strong>Inspect</strong>
-            <small>extreme depth later</small>
+            <small>world → build</small>
           </div>
+
+          <div className="detail-group">
+            <h3>Build Graph</h3>
+            <dl>
+              <div><dt>requirements</dt><dd>{buildGraph?.totals.requirementCount ?? 0}</dd></div>
+              <div><dt>unresolved sourcing</dt><dd>{buildGraph?.totals.unresolvedCount ?? 0}</dd></div>
+              <div><dt>world revision</dt><dd>{buildGraph?.worldRevision ?? world.revision}</dd></div>
+            </dl>
+          </div>
+
           {!selected ? (
-            <p className="empty-copy">Select a thing to inspect its current world truth.</p>
+            <p className="empty-copy">Select a thing to inspect its current world truth and build requirements.</p>
           ) : (
             <>
               <div className="identity-card">
@@ -271,6 +316,22 @@ export function App() {
                   </button>
                 ))}
               </div>
+
+              {selectedRequirements.length > 0 && (
+                <div className="detail-group">
+                  <h3>Required to build</h3>
+                  {selectedRequirements.map((requirement) => (
+                    <button
+                      className="child-part"
+                      key={requirement.id}
+                      onClick={() => setSelectedId(requirement.sourceEntityId)}
+                    >
+                      <span>{requirement.quantity} {requirement.unit} · {requirement.name}</span>
+                      <small>{requirement.acquisition} · {requirement.specification ?? 'specification open'}</small>
+                    </button>
+                  ))}
+                </div>
+              )}
 
               <div className="provenance">
                 <span>provenance</span>
