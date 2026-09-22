@@ -1,5 +1,5 @@
-import type { BuildRequirement, BuildRequirementProvider } from '../../packages/build/src/index'
-import type { CapabilityDefinition } from '../../packages/capabilities/src/index'
+import type { BuildRequirement, BuildRequirementProvider } from '../../../packages/build/src/index'
+import type { CapabilityDefinition } from '../../../packages/capabilities/src/index'
 import {
   ActorRef,
   Vec3,
@@ -9,7 +9,7 @@ import {
   createBoxEntity,
   createId,
   createTransaction,
-} from '../../packages/world/src/index'
+} from '../../../packages/world/src/index'
 
 export interface ConceptShedInput {
   name?: string
