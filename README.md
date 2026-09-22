@@ -14,8 +14,10 @@ The first vNext slice proves the new ownership model:
 - typed entities, primitive geometry, hierarchy, properties, ports, relations, and provenance;
 - atomic revision-checked transactions with durable local history;
 - a first derived Build Graph for required parts and materials;
+- a local-first Supply Graph backed by timestamped sourcing observations;
+- persistent inventory/local/fabrication/provider observations outside World truth;
 - a minimal browser Studio;
-- an MCP endpoint with world, history, and Build Graph tools;
+- an MCP endpoint with World, history, Build Graph, and Supply Graph tools;
 - browser and MCP using the same World store and mutation contracts.
 
 The UI is intentionally small. Current implementation depth must not be mistaken for product scope.
@@ -52,6 +54,7 @@ apps/
 packages/
   world/      canonical world types, operations, persistence, and store
   build/      derived Build Graph requirements
+  supply/     sourcing observations and local-first Supply Graph
 ```
 
 The architecture is expected to change rapidly while Product Truth remains stable.
