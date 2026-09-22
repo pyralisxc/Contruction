@@ -10,6 +10,10 @@ import {
   createConceptShedTransaction,
 } from '../../../capabilities/construction/src/index'
 import {
+  createSolarMicrogridTransaction,
+  energyCapability,
+} from '../../../capabilities/energy/src/index'
+import {
   createRainwaterSystemTransaction,
   waterCapability,
 } from '../../../capabilities/water/src/index'
@@ -48,6 +52,7 @@ const proposalStore = new FileProposalStore(PROPOSAL_PATH)
 const capabilities = new CapabilityRegistry()
 capabilities.register(constructionCapability)
 capabilities.register(waterCapability)
+capabilities.register(energyCapability)
 
 const app = createMcpExpressApp({ host: '127.0.0.1' })
 
@@ -232,6 +237,19 @@ const rainwaterSystemInputSchema = z.object({
   origin: vec3Schema.optional(),
 })
 
+const solarMicrogridInputSchema = z.object({
+  baseRevision: z.number().int().nonnegative(),
+  actor: actorSchema.optional(),
+  name: z.string().min(1).optional(),
+  panelCount: z.number().int().positive(),
+  panelWatts: z.number().positive(),
+  batteryKwh: z.number().positive(),
+  inverterKw: z.number().positive(),
+  origin: vec3Schema.optional(),
+  loadEntityId: z.string().min(1).optional(),
+  loadPortId: z.string().min(1).optional(),
+})
+
 function normalizeSupplyObservation(
   input: z.infer<typeof supplyObservationInputSchema>,
 ): SupplyObservation {
@@ -341,6 +359,24 @@ app.post('/api/water/rainwater-system', (req, res) => {
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Rainwater system creation failed'
+    const conflict = error instanceof Error && error.name === 'WorldConflictError'
+    res.status(conflict ? 409 : 400).json({ error: message })
+  }
+})
+
+app.post('/api/energy/solar-microgrid', (req, res) => {
+  try {
+    const input = solarMicrogridInputSchema.parse(req.body)
+    const actor = input.actor ?? { kind: 'human' as const, id: 'studio:local-human', label: 'Studio user' }
+    const transaction = createSolarMicrogridTransaction(input.baseRevision, input, actor)
+    const result = store.apply(transaction)
+    res.json({
+      result,
+      buildGraph: buildGraph(),
+      supplyGraph: supplyGraph(),
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Solar microgrid creation failed'
     const conflict = error instanceof Error && error.name === 'WorldConflictError'
     res.status(conflict ? 409 : 400).json({ error: message })
   }
@@ -515,6 +551,57 @@ const mcpHandler = createMcpHandler(() => {
     async (input) => {
       const actor = transactionActor(input.actor)
       const proposal = createRainwaterSystemTransaction(input.baseRevision, input, actor)
+      const preview = previewTransaction(store.snapshot(), proposal)
+      proposalStore.save(proposal)
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            proposal,
+            diff: preview.diff,
+            buildGraphPreview: deriveBuildGraph(
+              preview.previewWorld,
+              new Date().toISOString(),
+              capabilities.buildRequirementProviders(),
+            ),
+          }, null, 2),
+        }],
+      }
+    },
+  )
+
+
+  server.registerTool(
+    'energy_create_solar_microgrid',
+    {
+      description: 'Create a conceptual solar, battery, inverter, and distribution system, optionally supplying an existing power port.',
+      inputSchema: solarMicrogridInputSchema,
+    },
+    async (input) => {
+      const actor = transactionActor(input.actor)
+      const transaction = createSolarMicrogridTransaction(input.baseRevision, input, actor)
+      const result = store.apply(transaction)
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            result,
+            buildGraph: buildGraph(),
+          }, null, 2),
+        }],
+      }
+    },
+  )
+
+  server.registerTool(
+    'energy_propose_solar_microgrid',
+    {
+      description: 'Create a reviewable solar microgrid proposal, including an optional cross-capability load connection.',
+      inputSchema: solarMicrogridInputSchema,
+    },
+    async (input) => {
+      const actor = transactionActor(input.actor)
+      const proposal = createSolarMicrogridTransaction(input.baseRevision, input, actor)
       const preview = previewTransaction(store.snapshot(), proposal)
       proposalStore.save(proposal)
       return {
