@@ -45,11 +45,25 @@ export interface SupplyCandidate {
   rank: number
 }
 
+export interface SupplyAllocation {
+  observationId: string
+  sourceId: string
+  sourceName: string
+  sourceKind: SupplySourceKind
+  quantity: number
+  unit: string
+  unitPrice?: number
+  estimatedCost?: number
+}
+
 export interface SupplyResolution {
   requirement: BuildRequirement
   status: 'unresolved' | 'partial' | 'covered'
   candidates: SupplyCandidate[]
+  allocations: SupplyAllocation[]
   preferredCandidate?: SupplyCandidate
+  coveredQuantity: number
+  shortfallQuantity: number
 }
 
 export interface SupplyGraph {
@@ -64,6 +78,7 @@ export interface SupplyGraph {
     unresolvedCount: number
     localCandidateCount: number
     ownedCandidateCount: number
+    allocatedObservationCount: number
   }
 }
 
@@ -174,26 +189,66 @@ export function deriveSupplyGraph(
   observations: SupplyObservation[],
   generatedAt = new Date().toISOString(),
 ): SupplyGraph {
+  const remainingByObservation = new Map(
+    observations.map((observation) => [observation.id, Math.max(0, observation.quantityAvailable)]),
+  )
+  const allocatedObservationIds = new Set<string>()
+
   const resolutions = buildGraph.requirements.map<SupplyResolution>((requirement) => {
     const candidates = observations
       .map((observation) => candidateFor(requirement, observation))
       .filter((candidate): candidate is SupplyCandidate => Boolean(candidate))
       .sort((a, b) => a.rank - b.rank || (a.unitPrice ?? Number.MAX_SAFE_INTEGER) - (b.unitPrice ?? Number.MAX_SAFE_INTEGER))
 
-    const preferredCandidate = candidates[0]
-    const available = preferredCandidate?.quantityAvailable ?? 0
+    let quantityNeeded = Math.max(0, requirement.quantity)
+    const allocations: SupplyAllocation[] = []
+
+    for (const candidate of candidates) {
+      if (quantityNeeded <= 0) break
+      const remaining = remainingByObservation.get(candidate.observationId) ?? 0
+      if (remaining <= 0) continue
+
+      const quantity = Math.min(quantityNeeded, remaining)
+      remainingByObservation.set(candidate.observationId, remaining - quantity)
+      quantityNeeded -= quantity
+      allocatedObservationIds.add(candidate.observationId)
+
+      allocations.push({
+        observationId: candidate.observationId,
+        sourceId: candidate.sourceId,
+        sourceName: candidate.sourceName,
+        sourceKind: candidate.sourceKind,
+        quantity,
+        unit: candidate.unit,
+        unitPrice: candidate.unitPrice,
+        estimatedCost:
+          typeof candidate.unitPrice === 'number'
+            ? candidate.unitPrice * quantity
+            : undefined,
+      })
+    }
+
+    const coveredQuantity = Math.max(0, requirement.quantity - quantityNeeded)
     const status =
-      !preferredCandidate
-        ? 'unresolved'
-        : available >= requirement.quantity
-          ? 'covered'
-          : 'partial'
+      requirement.quantity <= 0 || quantityNeeded <= 0
+        ? 'covered'
+        : coveredQuantity > 0
+          ? 'partial'
+          : 'unresolved'
+
+    const preferredObservationId = allocations[0]?.observationId
+    const preferredCandidate = preferredObservationId
+      ? candidates.find((candidate) => candidate.observationId === preferredObservationId)
+      : candidates[0]
 
     return {
       requirement,
       status,
       candidates,
+      allocations,
       preferredCandidate,
+      coveredQuantity,
+      shortfallQuantity: Math.max(0, quantityNeeded),
     }
   })
 
@@ -211,6 +266,7 @@ export function deriveSupplyGraph(
       unresolvedCount: resolutions.filter((resolution) => resolution.status === 'unresolved').length,
       localCandidateCount: allCandidates.filter((candidate) => isLocal(candidate.sourceKind)).length,
       ownedCandidateCount: allCandidates.filter((candidate) => candidate.sourceKind === 'inventory').length,
+      allocatedObservationCount: allocatedObservationIds.size,
     },
   }
 }
