@@ -214,3 +214,5 @@ export function deriveSupplyGraph(
     },
   }
 }
+
+export { FileSupplyObservationStore } from './store'
