@@ -1,11 +1,14 @@
+import { resolve } from 'node:path'
+
 import { createMcpExpressApp } from '@modelcontextprotocol/express'
 import { toNodeHandler } from '@modelcontextprotocol/node'
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
 import * as z from 'zod/v4'
 
+import { deriveBuildGraph } from '../../../packages/build/src/index'
 import {
   ActorRef,
-  InMemoryWorldStore,
+  FileWorldStore,
   PropertyValue,
   WorldTransaction,
   createBoxEntity,
@@ -14,19 +17,34 @@ import {
 } from '../../../packages/world/src/index'
 
 const PORT = Number(process.env.PORT ?? 3000)
+const WORLD_PATH = resolve(process.env.CONTRACTOR_WORLD_PATH ?? '.data/world.json')
 
-const store = new InMemoryWorldStore(
+const store = new FileWorldStore(
+  WORLD_PATH,
   createEmptyWorld('Contractor Hub vNext World', 'world-vnext'),
 )
 
 const app = createMcpExpressApp({ host: '127.0.0.1' })
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, revision: store.snapshot().revision })
+  res.json({
+    ok: true,
+    revision: store.snapshot().revision,
+    persistence: 'file',
+    worldPath: WORLD_PATH,
+  })
 })
 
 app.get('/api/world', (_req, res) => {
   res.json({ world: store.snapshot() })
+})
+
+app.get('/api/history', (_req, res) => {
+  res.json({ history: store.history() })
+})
+
+app.get('/api/build-graph', (_req, res) => {
+  res.json({ buildGraph: deriveBuildGraph(store.snapshot()) })
 })
 
 app.post('/api/transactions', (req, res) => {
@@ -75,6 +93,31 @@ const mcpHandler = createMcpHandler(() => {
     },
     async () => ({
       content: [{ type: 'text', text: worldText() }],
+    }),
+  )
+
+  server.registerTool(
+    'world_history',
+    {
+      description: 'Read accepted transaction history for the current local world.',
+      inputSchema: z.object({}),
+    },
+    async () => ({
+      content: [{ type: 'text', text: JSON.stringify(store.history(), null, 2) }],
+    }),
+  )
+
+  server.registerTool(
+    'build_graph',
+    {
+      description: 'Derive the current Build Graph of required parts and materials from the accepted World.',
+      inputSchema: z.object({}),
+    },
+    async () => ({
+      content: [{
+        type: 'text',
+        text: JSON.stringify(deriveBuildGraph(store.snapshot()), null, 2),
+      }],
     }),
   )
 
@@ -188,5 +231,6 @@ app.all('/mcp', (req, res) => void nodeMcpHandler(req, res, req.body))
 
 app.listen(PORT, '127.0.0.1', () => {
   console.log(`Contractor Hub vNext server listening on http://127.0.0.1:${PORT}`)
+  console.log(`World persistence: ${WORLD_PATH}`)
   console.log(`MCP endpoint: http://127.0.0.1:${PORT}/mcp`)
 })
