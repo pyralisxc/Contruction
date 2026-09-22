@@ -61,6 +61,14 @@ function acquisition(entity: WorldEntity): BuildRequirement['acquisition'] {
   return 'unresolved'
 }
 
+function requirementConfidence(entity: WorldEntity): RequirementConfidence | undefined {
+  const value = stringProperty(entity, 'requirementConfidence')
+  if (value === 'conceptual' || value === 'estimated' || value === 'specified' || value === 'verified') {
+    return value
+  }
+  return undefined
+}
+
 function explicitRequirements(world: WorldDocument): BuildRequirement[] {
   return world.entities.flatMap<BuildRequirement>((entity) => {
     const kind = requirementKind(entity)
@@ -76,7 +84,7 @@ function explicitRequirements(world: WorldDocument): BuildRequirement[] {
       quantity: Math.max(0, numberProperty(entity, 'quantity', 1)),
       unit: stringProperty(entity, 'unit') ?? 'each',
       acquisition: acquisition(entity),
-      confidence: stringProperty(entity, 'requirementConfidence') as RequirementConfidence | undefined,
+      confidence: requirementConfidence(entity),
       basis: stringProperty(entity, 'requirementBasis'),
     }]
   })
