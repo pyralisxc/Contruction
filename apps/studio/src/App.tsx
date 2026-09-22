@@ -4,12 +4,21 @@ import type { BuildGraph, BuildRequirement } from '../../../packages/build/src/i
 import type { SupplyGraph } from '../../../packages/supply/src/index'
 import {
   ActorRef,
+  WorldDiff,
   WorldDocument,
   WorldEntity,
   WorldMutation,
+  WorldTransaction,
   createBoxEntity,
   createTransaction,
 } from '../../../packages/world/src/index'
+
+interface ProposalView {
+  status: 'ready' | 'stale-or-invalid'
+  proposal: WorldTransaction
+  diff?: WorldDiff
+  error?: string
+}
 
 const human: ActorRef = {
   kind: 'human',
@@ -34,45 +43,54 @@ export function App() {
   const [world, setWorld] = useState<WorldDocument | null>(null)
   const [buildGraph, setBuildGraph] = useState<BuildGraph | null>(null)
   const [supplyGraph, setSupplyGraph] = useState<SupplyGraph | null>(null)
+  const [proposals, setProposals] = useState<ProposalView[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [status, setStatus] = useState('Connecting to world...')
 
   const loadDerived = useCallback(async () => {
-    const [buildResponse, supplyResponse] = await Promise.all([
+    const [buildResponse, supplyResponse, proposalResponse] = await Promise.all([
       fetch('/api/build-graph'),
       fetch('/api/supply-graph'),
+      fetch('/api/proposals'),
     ])
     if (!buildResponse.ok) throw new Error('Could not derive Build Graph')
     if (!supplyResponse.ok) throw new Error('Could not derive Supply Graph')
+    if (!proposalResponse.ok) throw new Error('Could not load proposals')
 
-    const [buildPayload, supplyPayload] = await Promise.all([
+    const [buildPayload, supplyPayload, proposalPayload] = await Promise.all([
       buildResponse.json(),
       supplyResponse.json(),
+      proposalResponse.json(),
     ])
     setBuildGraph(buildPayload.buildGraph)
     setSupplyGraph(supplyPayload.supplyGraph)
+    setProposals(proposalPayload.proposals)
   }, [])
 
   const loadWorld = useCallback(async () => {
-    const [worldResponse, buildResponse, supplyResponse] = await Promise.all([
+    const [worldResponse, buildResponse, supplyResponse, proposalResponse] = await Promise.all([
       fetch('/api/world'),
       fetch('/api/build-graph'),
       fetch('/api/supply-graph'),
+      fetch('/api/proposals'),
     ])
 
     if (!worldResponse.ok) throw new Error('Could not load world')
     if (!buildResponse.ok) throw new Error('Could not derive Build Graph')
     if (!supplyResponse.ok) throw new Error('Could not derive Supply Graph')
+    if (!proposalResponse.ok) throw new Error('Could not load proposals')
 
-    const [worldPayload, buildPayload, supplyPayload] = await Promise.all([
+    const [worldPayload, buildPayload, supplyPayload, proposalPayload] = await Promise.all([
       worldResponse.json(),
       buildResponse.json(),
       supplyResponse.json(),
+      proposalResponse.json(),
     ])
 
     setWorld(worldPayload.world)
     setBuildGraph(buildPayload.buildGraph)
     setSupplyGraph(supplyPayload.supplyGraph)
+    setProposals(proposalPayload.proposals)
     setStatus('World synchronized')
   }, [])
 
@@ -141,6 +159,30 @@ export function App() {
     if (!response.ok) throw new Error(payload.error ?? 'Supply observation failed')
     setSupplyGraph(payload.supplyGraph)
     setStatus('Supply Graph refreshed')
+  }, [])
+
+
+  const applyProposal = useCallback(async (proposalId: string) => {
+    setStatus('Applying proposal...')
+    const response = await fetch(`/api/proposals/${encodeURIComponent(proposalId)}/apply`, {
+      method: 'POST',
+    })
+    const payload = await response.json()
+    if (!response.ok) {
+      await loadWorld()
+      throw new Error(payload.error ?? 'Proposal apply failed')
+    }
+    await loadWorld()
+    setStatus('Proposal accepted into World')
+  }, [loadWorld])
+
+  const discardProposal = useCallback(async (proposalId: string) => {
+    const response = await fetch(`/api/proposals/${encodeURIComponent(proposalId)}`, {
+      method: 'DELETE',
+    })
+    if (!response.ok) throw new Error('Proposal discard failed')
+    setProposals((current) => current.filter((item) => item.proposal.id !== proposalId))
+    setStatus('Proposal discarded')
   }, [])
 
   const markOwned = useCallback(async (requirement: BuildRequirement) => {
@@ -265,6 +307,7 @@ export function App() {
           <span>{buildGraph?.totals.requirementCount ?? 0} requirements</span>
           <span>{supplyGraph?.totals.coveredCount ?? 0} sourced</span>
           <span>{supplyGraph?.totals.unresolvedCount ?? 0} unsourced</span>
+          <span>{proposals.length} proposals</span>
           <span className="mcp-badge">MCP /mcp</span>
         </div>
       </header>
@@ -346,6 +389,39 @@ export function App() {
               <div><dt>owned candidates</dt><dd>{supplyGraph?.totals.ownedCandidateCount ?? 0}</dd></div>
             </dl>
           </div>
+
+
+          {proposals.length > 0 && (
+            <div className="detail-group">
+              <h3>Pending proposals</h3>
+              {proposals.map((item) => (
+                <div className="proposal-card" key={item.proposal.id}>
+                  <div>
+                    <strong>{item.proposal.note ?? 'World changes'}</strong>
+                    <small>{item.proposal.actor.label ?? item.proposal.actor.id}</small>
+                  </div>
+                  {item.status === 'ready' && item.diff ? (
+                    <small>
+                      +{item.diff.createdEntities.length} created ·
+                      {' '}{item.diff.changedEntities.length} changed ·
+                      {' '}{item.diff.removedEntities.length} removed
+                    </small>
+                  ) : (
+                    <small className="proposal-warning">{item.error ?? 'Proposal is stale or invalid'}</small>
+                  )}
+                  <div className="requirement-actions">
+                    <button
+                      disabled={item.status !== 'ready'}
+                      onClick={() => applyProposal(item.proposal.id)}
+                    >
+                      Apply
+                    </button>
+                    <button onClick={() => discardProposal(item.proposal.id)}>Discard</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
 
           {!selected ? (
             <p className="empty-copy">Select a thing to inspect its world truth, build requirements, and sourcing state.</p>
