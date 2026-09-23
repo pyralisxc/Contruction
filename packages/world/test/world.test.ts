@@ -533,3 +533,76 @@ test('point removal cannot make path or polygon geometry invalid', () => {
 
   assert.deepEqual(store.snapshot(), before)
 })
+
+
+test('accepted property edits record value-level knowledge provenance', () => {
+  const store = new InMemoryWorldStore()
+  const entity = createBoxEntity({
+    id: 'spec-object',
+    kind: 'equipment',
+    name: 'Spec object',
+    position: { x: 0, y: 0, z: 0 },
+    size: { x: 1, y: 1, z: 1 },
+    properties: { capacity: 10 },
+    actor: human,
+  })
+
+  store.apply(createTransaction({
+    baseRevision: 0,
+    actor: human,
+    mutations: [{ kind: 'createEntity', entity }],
+  }))
+
+  store.apply(createTransaction({
+    baseRevision: 1,
+    actor: human,
+    at: '2026-09-23T01:00:00.000Z',
+    mutations: [{
+      kind: 'setProperty',
+      entityId: 'spec-object',
+      key: 'capacity',
+      value: 20,
+      knowledge: {
+        confidence: 'high',
+        note: 'Measured by owner',
+      },
+    }],
+  }))
+
+  let current = store.snapshot().entities[0]
+  assert.equal(current.properties.capacity, 20)
+  assert.equal(current.propertyKnowledge?.capacity?.basis, 'chosen')
+  assert.equal(current.propertyKnowledge?.capacity?.confidence, 'high')
+  assert.equal(current.propertyKnowledge?.capacity?.provenance.origin, 'user')
+  assert.equal(current.propertyKnowledge?.capacity?.provenance.actorId, human.id)
+
+  store.apply(createTransaction({
+    baseRevision: 2,
+    actor: agent,
+    at: '2026-09-23T01:01:00.000Z',
+    mutations: [{
+      kind: 'setProperty',
+      entityId: 'spec-object',
+      key: 'capacity',
+      value: 24,
+    }],
+  }))
+
+  current = store.snapshot().entities[0]
+  assert.equal(current.propertyKnowledge?.capacity?.basis, 'proposed')
+  assert.equal(current.propertyKnowledge?.capacity?.provenance.origin, 'agent')
+
+  store.apply(createTransaction({
+    baseRevision: 3,
+    actor: human,
+    mutations: [{
+      kind: 'removeProperty',
+      entityId: 'spec-object',
+      key: 'capacity',
+    }],
+  }))
+
+  current = store.snapshot().entities[0]
+  assert.equal('capacity' in current.properties, false)
+  assert.equal(current.propertyKnowledge?.capacity, undefined)
+})
