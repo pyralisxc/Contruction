@@ -45,6 +45,23 @@ function validateEntity(entity: WorldEntity) {
   if (!entity.properties || typeof entity.properties !== 'object' || Array.isArray(entity.properties)) {
     throw new WorldValidationError(`Entity ${entity.id} properties must be an object`)
   }
+  if (entity.propertyKnowledge !== undefined) {
+    if (
+      !entity.propertyKnowledge ||
+      typeof entity.propertyKnowledge !== 'object' ||
+      Array.isArray(entity.propertyKnowledge)
+    ) {
+      throw new WorldValidationError(`Entity ${entity.id} propertyKnowledge must be an object`)
+    }
+    for (const [key, knowledge] of Object.entries(entity.propertyKnowledge)) {
+      if (!(key in entity.properties)) {
+        throw new WorldValidationError(`Property knowledge has no matching property on ${entity.id}: ${key}`)
+      }
+      requireNonEmpty(`property knowledge basis for ${key}`, knowledge?.basis)
+      requireNonEmpty(`property knowledge actor for ${key}`, knowledge?.provenance?.actorId)
+      requireNonEmpty(`property knowledge timestamp for ${key}`, knowledge?.provenance?.at)
+    }
+  }
   if (!Array.isArray(entity.ports)) {
     throw new WorldValidationError(`Entity ${entity.id} ports must be an array`)
   }
@@ -167,7 +184,14 @@ function requirePointIndex(entity: WorldEntity, index: number, allowEnd = false)
   return geometry
 }
 
-function applyMutation(world: WorldDocument, mutation: WorldMutation) {
+function defaultPropertyBasis(actor: WorldTransaction['actor']): NonNullable<Extract<WorldMutation, { kind: 'setProperty' }>['knowledge']>['basis'] {
+  if (actor.kind === 'human') return 'chosen'
+  if (actor.kind === 'agent') return 'proposed'
+  if (actor.kind === 'automation') return 'calculated'
+  return 'defaulted'
+}
+
+function applyMutation(world: WorldDocument, mutation: WorldMutation, transaction: WorldTransaction) {
   switch (mutation.kind) {
     case 'createEntity': {
       validateEntity(mutation.entity)
@@ -261,11 +285,21 @@ function applyMutation(world: WorldDocument, mutation: WorldMutation) {
       if (typeof mutation.value === 'number' && !Number.isFinite(mutation.value)) {
         throw new WorldValidationError('Numeric property value must be finite')
       }
-      entityById(world, mutation.entityId).properties[mutation.key] = mutation.value
+      const entity = entityById(world, mutation.entityId)
+      entity.properties[mutation.key] = mutation.value
+      entity.propertyKnowledge ??= {}
+      entity.propertyKnowledge[mutation.key] = {
+        basis: mutation.knowledge?.basis ?? defaultPropertyBasis(transaction.actor) ?? 'unknown',
+        confidence: mutation.knowledge?.confidence,
+        note: mutation.knowledge?.note,
+        provenance: createProvenance(transaction),
+      }
       return
     }
     case 'removeProperty': {
-      delete entityById(world, mutation.entityId).properties[mutation.key]
+      const entity = entityById(world, mutation.entityId)
+      delete entity.properties[mutation.key]
+      if (entity.propertyKnowledge) delete entity.propertyKnowledge[mutation.key]
       return
     }
     case 'addPort': {
@@ -348,7 +382,7 @@ export function applyTransaction(
   const next = cloneWorld(current)
 
   for (const mutation of transaction.mutations) {
-    applyMutation(next, mutation)
+    applyMutation(next, mutation, transaction)
   }
 
   const previousRevision = current.revision
