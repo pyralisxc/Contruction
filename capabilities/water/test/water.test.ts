@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import { deriveBuildGraph } from '../../../packages/build/src/index'
 import { CapabilityRegistry } from '../../../packages/capabilities/src/index'
+import { deriveSupplyGraph } from '../../../packages/supply/src/index'
 import {
   InMemoryWorldStore,
   createEmptyWorld,
@@ -101,4 +102,25 @@ test('editing routed pipe geometry immediately changes derived pipe quantity', (
     after.requirements.find((requirement) => requirement.name === 'Water pipe')?.quantity,
     15,
   )
+
+  const pipeRequirement = after.requirements.find((requirement) => requirement.name === 'Water pipe')
+  assert.ok(pipeRequirement)
+
+  const supply = deriveSupplyGraph(after, [{
+    id: 'existing-pipe-stock',
+    sourceId: 'inventory:shop',
+    sourceName: 'Shop inventory',
+    sourceKind: 'inventory',
+    observedAt: '2026-09-23T00:02:02.000Z',
+    requirementId: pipeRequirement.id,
+    quantityAvailable: 10,
+    unit: 'ft',
+  }])
+
+  const resolution = supply.resolutions.find(
+    (candidate) => candidate.requirement.id === pipeRequirement.id,
+  )
+  assert.equal(resolution?.status, 'partial')
+  assert.equal(resolution?.coveredQuantity, 10)
+  assert.equal(resolution?.shortfallQuantity, 5)
 })
