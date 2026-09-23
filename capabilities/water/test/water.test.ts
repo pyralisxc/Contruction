@@ -3,7 +3,7 @@ import test from 'node:test'
 
 import { deriveBuildGraph } from '../../../packages/build/src/index'
 import { CapabilityRegistry } from '../../../packages/capabilities/src/index'
-import { deriveSupplyGraph } from '../../../packages/supply/src/index'
+import { deriveSupplyGraph, requirementSignature } from '../../../packages/supply/src/index'
 import {
   InMemoryWorldStore,
   createEmptyWorld,
@@ -113,6 +113,7 @@ test('editing routed pipe geometry immediately changes derived pipe quantity', (
     sourceKind: 'inventory',
     observedAt: '2026-09-23T00:02:02.000Z',
     requirementId: pipeRequirement.id,
+    requirementSignature: requirementSignature(pipeRequirement),
     quantityAvailable: 10,
     unit: 'ft',
   }])
