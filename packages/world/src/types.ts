@@ -119,6 +119,23 @@ export type WorldMutation =
       delta: Vec3
     }
   | {
+      kind: 'setGeometryPoint'
+      entityId: EntityId
+      index: number
+      point: Vec3
+    }
+  | {
+      kind: 'insertGeometryPoint'
+      entityId: EntityId
+      index: number
+      point: Vec3
+    }
+  | {
+      kind: 'removeGeometryPoint'
+      entityId: EntityId
+      index: number
+    }
+  | {
       kind: 'setProperty'
       entityId: EntityId
       key: string
