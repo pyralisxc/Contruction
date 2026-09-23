@@ -11,12 +11,13 @@ This branch is a generation reset. The previous BIM-lite prototype is preserved 
 The vNext foundation now proves:
 
 - one server-owned, file-persisted World;
-- typed entities, primitive geometry, hierarchy, properties, ports, port-aware relations, and provenance;
+- typed entities with box, polyline, and polygon geometry, hierarchy, properties, ports, port-aware relations, and provenance;
 - atomic revision-checked transactions with runtime validation and durable local history;
 - reviewable proposal -> diff -> apply/discard flows for agent changes;
 - a capability registry rather than construction-specific kernel ownership;
-- Construction, Water, and Energy capability packs;
+- Construction, Water, and Energy capability packs consuming the same geometry/connection kernel;
 - validated cross-capability connections (for example, solar distribution supplying a water-pump power port);
+- polygonal construction footprints and path-based walls/water routing with shared geometry math;
 - a derived Build Graph with confidence, basis, assumptions, and capability provenance;
 - a local-first Supply Graph with globally bounded quantity allocation;
 - persistent inventory/local/fabrication/provider observations outside World truth;
