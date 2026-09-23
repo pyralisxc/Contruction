@@ -7,7 +7,11 @@ import {
   WorldEntity,
   WorldTransaction,
   createBoxEntity,
+  createPolylineEntity,
+  createPolygonEntity,
   createId,
+  polygonAreaXY,
+  polylineLength,
   createTransaction,
 } from '../../../packages/world/src/index'
 
@@ -25,19 +29,25 @@ function requirePositive(label: string, value: number) {
   }
 }
 
-function boxArea(entity: WorldEntity): number {
-  if (!entity.geometry || entity.geometry.type !== 'box') return 0
-  return entity.geometry.size.x * entity.geometry.size.y
+function planArea(entity: WorldEntity): number {
+  if (!entity.geometry) return 0
+  if (entity.geometry.type === 'box') return entity.geometry.size.x * entity.geometry.size.y
+  if (entity.geometry.type === 'polygon') return polygonAreaXY(entity.geometry.points)
+  return 0
 }
 
 function wallLength(entity: WorldEntity): number {
-  if (!entity.geometry || entity.geometry.type !== 'box') return 0
-  return Math.max(entity.geometry.size.x, entity.geometry.size.y)
+  if (!entity.geometry) return 0
+  if (entity.geometry.type === 'box') return Math.max(entity.geometry.size.x, entity.geometry.size.y)
+  if (entity.geometry.type === 'polyline') return polylineLength(entity.geometry.points)
+  return 0
 }
 
 function wallHeight(entity: WorldEntity): number {
-  if (!entity.geometry || entity.geometry.type !== 'box') return 0
-  return entity.geometry.size.z
+  const value = entity.properties.heightFeet
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (entity.geometry?.type === 'box') return entity.geometry.size.z
+  return 0
 }
 
 function numberProperty(entity: WorldEntity, key: string, fallback: number): number {
@@ -51,7 +61,7 @@ const constructionRequirements: BuildRequirementProvider = {
   derive(world: WorldDocument): BuildRequirement[] {
     return world.entities.flatMap<BuildRequirement>((entity) => {
       if (entity.kind === 'construction.floor') {
-        const area = boxArea(entity)
+        const area = planArea(entity)
         if (area <= 0) return []
         return [{
           id: `construction:${entity.id}:subfloor`,
@@ -112,7 +122,7 @@ const constructionRequirements: BuildRequirementProvider = {
       }
 
       if (entity.kind === 'construction.roof') {
-        const area = boxArea(entity)
+        const area = planArea(entity)
         if (area <= 0) return []
         return [{
           id: `construction:${entity.id}:roof-sheathing`,
@@ -150,6 +160,18 @@ export function createConceptShedTransaction(
   const name = input.name?.trim() || 'Concept shed'
   const wallThickness = 0.5
 
+  const floorPoints = [
+    { x: origin.x, y: origin.y, z: origin.z },
+    { x: origin.x + input.width, y: origin.y, z: origin.z },
+    { x: origin.x + input.width, y: origin.y + input.depth, z: origin.z },
+    { x: origin.x, y: origin.y + input.depth, z: origin.z },
+  ]
+
+  const roofPoints = floorPoints.map((point) => ({
+    ...point,
+    z: origin.z + input.wallHeight,
+  }))
+
   const entities = [
     createBoxEntity({
       id: structureId,
@@ -164,13 +186,12 @@ export function createConceptShedTransaction(
       actor,
       at,
     }),
-    createBoxEntity({
+    createPolygonEntity({
       id: createId('floor'),
       kind: 'construction.floor',
       name: `${name} floor`,
       parentId: structureId,
-      position: origin,
-      size: { x: input.width, y: input.depth, z: 0.75 / 12 },
+      points: floorPoints,
       properties: {
         capability: 'construction',
         fidelity: 'concept',
@@ -178,57 +199,52 @@ export function createConceptShedTransaction(
       actor,
       at,
     }),
-    createBoxEntity({
+    createPolylineEntity({
       id: createId('wall'),
       kind: 'construction.wall',
       name: `${name} north wall`,
       parentId: structureId,
-      position: origin,
-      size: { x: input.width, y: wallThickness, z: input.wallHeight },
-      properties: { capability: 'construction', fidelity: 'concept', framingSpacingInches: 16 },
+      points: [floorPoints[0], floorPoints[1]],
+      properties: { capability: 'construction', fidelity: 'concept', framingSpacingInches: 16, heightFeet: input.wallHeight },
       actor,
       at,
     }),
-    createBoxEntity({
-      id: createId('wall'),
-      kind: 'construction.wall',
-      name: `${name} south wall`,
-      parentId: structureId,
-      position: { x: origin.x, y: origin.y + input.depth - wallThickness, z: origin.z },
-      size: { x: input.width, y: wallThickness, z: input.wallHeight },
-      properties: { capability: 'construction', fidelity: 'concept', framingSpacingInches: 16 },
-      actor,
-      at,
-    }),
-    createBoxEntity({
-      id: createId('wall'),
-      kind: 'construction.wall',
-      name: `${name} west wall`,
-      parentId: structureId,
-      position: origin,
-      size: { x: wallThickness, y: input.depth, z: input.wallHeight },
-      properties: { capability: 'construction', fidelity: 'concept', framingSpacingInches: 16 },
-      actor,
-      at,
-    }),
-    createBoxEntity({
+    createPolylineEntity({
       id: createId('wall'),
       kind: 'construction.wall',
       name: `${name} east wall`,
       parentId: structureId,
-      position: { x: origin.x + input.width - wallThickness, y: origin.y, z: origin.z },
-      size: { x: wallThickness, y: input.depth, z: input.wallHeight },
-      properties: { capability: 'construction', fidelity: 'concept', framingSpacingInches: 16 },
+      points: [floorPoints[1], floorPoints[2]],
+      properties: { capability: 'construction', fidelity: 'concept', framingSpacingInches: 16, heightFeet: input.wallHeight },
       actor,
       at,
     }),
-    createBoxEntity({
+    createPolylineEntity({
+      id: createId('wall'),
+      kind: 'construction.wall',
+      name: `${name} south wall`,
+      parentId: structureId,
+      points: [floorPoints[2], floorPoints[3]],
+      properties: { capability: 'construction', fidelity: 'concept', framingSpacingInches: 16, heightFeet: input.wallHeight },
+      actor,
+      at,
+    }),
+    createPolylineEntity({
+      id: createId('wall'),
+      kind: 'construction.wall',
+      name: `${name} west wall`,
+      parentId: structureId,
+      points: [floorPoints[3], floorPoints[0]],
+      properties: { capability: 'construction', fidelity: 'concept', framingSpacingInches: 16, heightFeet: input.wallHeight },
+      actor,
+      at,
+    }),
+    createPolygonEntity({
       id: createId('roof'),
       kind: 'construction.roof',
       name: `${name} conceptual roof`,
       parentId: structureId,
-      position: { x: origin.x, y: origin.y, z: origin.z + input.wallHeight },
-      size: { x: input.width, y: input.depth, z: 0.5 },
+      points: roofPoints,
       properties: {
         capability: 'construction',
         fidelity: 'concept',
