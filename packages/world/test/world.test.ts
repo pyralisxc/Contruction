@@ -435,3 +435,101 @@ test('degenerate polygons fail closed at runtime', () => {
     mutations: [{ kind: 'createEntity', entity: bad }],
   })), WorldValidationError)
 })
+
+
+test('point geometry supports set, insert, and remove through atomic mutations', () => {
+  const store = new InMemoryWorldStore()
+  const route = createPolylineEntity({
+    id: 'editable-route',
+    kind: 'route.test',
+    name: 'Editable route',
+    points: [
+      { x: 0, y: 0, z: 0 },
+      { x: 4, y: 0, z: 0 },
+    ],
+    actor: human,
+  })
+
+  store.apply(createTransaction({
+    baseRevision: 0,
+    actor: human,
+    mutations: [{ kind: 'createEntity', entity: route }],
+  }))
+
+  store.apply(createTransaction({
+    baseRevision: 1,
+    actor: human,
+    mutations: [
+      {
+        kind: 'insertGeometryPoint',
+        entityId: 'editable-route',
+        index: 1,
+        point: { x: 2, y: 1, z: 0 },
+      },
+      {
+        kind: 'setGeometryPoint',
+        entityId: 'editable-route',
+        index: 2,
+        point: { x: 5, y: 2, z: 0 },
+      },
+    ],
+  }))
+
+  let geometry = store.snapshot().entities[0].geometry
+  assert.equal(geometry?.type, 'polyline')
+  assert.deepEqual(geometry?.type === 'polyline' ? geometry.points : null, [
+    { x: 0, y: 0, z: 0 },
+    { x: 2, y: 1, z: 0 },
+    { x: 5, y: 2, z: 0 },
+  ])
+
+  store.apply(createTransaction({
+    baseRevision: 2,
+    actor: human,
+    mutations: [{
+      kind: 'removeGeometryPoint',
+      entityId: 'editable-route',
+      index: 1,
+    }],
+  }))
+
+  geometry = store.snapshot().entities[0].geometry
+  assert.deepEqual(geometry?.type === 'polyline' ? geometry.points : null, [
+    { x: 0, y: 0, z: 0 },
+    { x: 5, y: 2, z: 0 },
+  ])
+})
+
+test('point removal cannot make path or polygon geometry invalid', () => {
+  const store = new InMemoryWorldStore()
+  const area = createPolygonEntity({
+    id: 'editable-area',
+    kind: 'area.test',
+    name: 'Editable area',
+    points: [
+      { x: 0, y: 0, z: 0 },
+      { x: 4, y: 0, z: 0 },
+      { x: 4, y: 4, z: 0 },
+    ],
+    actor: human,
+  })
+
+  store.apply(createTransaction({
+    baseRevision: 0,
+    actor: human,
+    mutations: [{ kind: 'createEntity', entity: area }],
+  }))
+
+  const before = store.snapshot()
+  assert.throws(() => store.apply(createTransaction({
+    baseRevision: 1,
+    actor: human,
+    mutations: [{
+      kind: 'removeGeometryPoint',
+      entityId: 'editable-area',
+      index: 1,
+    }],
+  })), WorldValidationError)
+
+  assert.deepEqual(store.snapshot(), before)
+})
