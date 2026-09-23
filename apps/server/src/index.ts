@@ -164,6 +164,12 @@ const vec3Schema = z.object({
 })
 
 const primitivePropertiesSchema = z.record(z.string(), propertyValueSchema)
+const portInputSchema = z.object({
+  id: z.string().min(1).optional(),
+  kind: z.string().min(1),
+  name: z.string().min(1),
+  properties: primitivePropertiesSchema.optional(),
+})
 
 const supplySourceKindSchema = z.enum([
   'inventory',
@@ -263,6 +269,21 @@ const proposalChangeSchema = z.discriminatedUnion('kind', [
     kind: z.literal('removeProperty'),
     entityId: z.string().min(1),
     key: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal('addPort'),
+    entityId: z.string().min(1),
+    port: portInputSchema,
+  }),
+  z.object({
+    kind: z.literal('connectPorts'),
+    relationId: z.string().min(1).optional(),
+    relationKind: z.string().min(1).optional(),
+    fromEntityId: z.string().min(1),
+    fromPortId: z.string().min(1),
+    toEntityId: z.string().min(1),
+    toPortId: z.string().min(1),
+    properties: primitivePropertiesSchema.optional(),
   }),
   z.object({
     kind: z.literal('removeEntity'),
@@ -433,6 +454,26 @@ function proposalTransaction(
           kind: 'removeProperty',
           entityId: change.entityId,
           key: change.key,
+        }
+      case 'addPort':
+        return {
+          kind: 'addPort',
+          entityId: change.entityId,
+          port: {
+            ...change.port,
+            id: change.port.id ?? createId('port'),
+          },
+        }
+      case 'connectPorts':
+        return {
+          kind: 'connectPorts',
+          relationId: change.relationId ?? createId('connection'),
+          relationKind: change.relationKind,
+          fromEntityId: change.fromEntityId,
+          fromPortId: change.fromPortId,
+          toEntityId: change.toEntityId,
+          toPortId: change.toPortId,
+          properties: change.properties,
         }
       case 'removeEntity':
         return {
@@ -1160,6 +1201,86 @@ const mcpHandler = createMcpHandler(() => {
       }))
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      }
+    },
+  )
+
+
+  server.registerTool(
+    'world_add_port',
+    {
+      description: 'Add a typed connection interface to an existing World entity.',
+      inputSchema: z.object({
+        baseRevision: z.number().int().nonnegative(),
+        actor: actorSchema.optional(),
+        entityId: z.string().min(1),
+        port: portInputSchema,
+      }),
+    },
+    async (input) => {
+      const actor = transactionActor(input.actor)
+      const port = {
+        ...input.port,
+        id: input.port.id ?? createId('port'),
+      }
+      const result = store.apply(createTransaction({
+        baseRevision: input.baseRevision,
+        actor,
+        mutations: [{
+          kind: 'addPort',
+          entityId: input.entityId,
+          port,
+        }],
+        note: 'MCP add port',
+      }))
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({ port, result }, null, 2),
+        }],
+      }
+    },
+  )
+
+  server.registerTool(
+    'world_connect_ports',
+    {
+      description: 'Connect a compatible output/bidirectional port to an input/bidirectional port through canonical World validation.',
+      inputSchema: z.object({
+        baseRevision: z.number().int().nonnegative(),
+        actor: actorSchema.optional(),
+        relationId: z.string().min(1).optional(),
+        relationKind: z.string().min(1).optional(),
+        fromEntityId: z.string().min(1),
+        fromPortId: z.string().min(1),
+        toEntityId: z.string().min(1),
+        toPortId: z.string().min(1),
+        properties: primitivePropertiesSchema.optional(),
+      }),
+    },
+    async (input) => {
+      const actor = transactionActor(input.actor)
+      const relationId = input.relationId ?? createId('connection')
+      const result = store.apply(createTransaction({
+        baseRevision: input.baseRevision,
+        actor,
+        mutations: [{
+          kind: 'connectPorts',
+          relationId,
+          relationKind: input.relationKind,
+          fromEntityId: input.fromEntityId,
+          fromPortId: input.fromPortId,
+          toEntityId: input.toEntityId,
+          toPortId: input.toPortId,
+          properties: input.properties,
+        }],
+        note: 'MCP connect ports',
+      }))
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({ relationId, result }, null, 2),
+        }],
       }
     },
   )
