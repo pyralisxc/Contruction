@@ -11,6 +11,9 @@ import {
   WorldTransaction,
   createBoxEntity,
   createTransaction,
+  geometryAnchor,
+  polygonAreaXY,
+  polylineLength,
 } from '../../../packages/world/src/index'
 
 interface ProposalView {
@@ -26,16 +29,37 @@ const human: ActorRef = {
   label: 'Studio user',
 }
 
+const CANVAS_SCALE = 12
+const CANVAS_ORIGIN_X = 360
+const CANVAS_ORIGIN_Y = 260
+
+function toCanvasPoint(point: { x: number; y: number }) {
+  return {
+    x: CANVAS_ORIGIN_X + point.x * CANVAS_SCALE,
+    y: CANVAS_ORIGIN_Y + point.y * CANVAS_SCALE,
+  }
+}
+
+function pointsAttribute(entity: WorldEntity): string {
+  const geometry = entity.geometry
+  if (!geometry || geometry.type === 'box') return ''
+  return geometry.points
+    .map((point) => {
+      const canvas = toCanvasPoint(point)
+      return `${canvas.x},${canvas.y}`
+    })
+    .join(' ')
+}
+
 function entityStyle(entity: WorldEntity) {
   const geometry = entity.geometry
   if (!geometry || geometry.type !== 'box') return undefined
 
-  const scale = 12
   return {
-    left: 360 + geometry.position.x * scale,
-    top: 260 + geometry.position.y * scale,
-    width: Math.max(28, geometry.size.x * scale),
-    height: Math.max(28, geometry.size.y * scale),
+    left: CANVAS_ORIGIN_X + geometry.position.x * CANVAS_SCALE,
+    top: CANVAS_ORIGIN_Y + geometry.position.y * CANVAS_SCALE,
+    width: Math.max(28, geometry.size.x * CANVAS_SCALE),
+    height: Math.max(28, geometry.size.y * CANVAS_SCALE),
   }
 }
 
@@ -348,7 +372,7 @@ export function App() {
       kind: 'part',
       name: 'Required part',
       parentId: selected.id,
-      position: selected.geometry?.position ?? { x: 0, y: 0, z: 0 },
+      position: selected.geometry ? geometryAnchor(selected.geometry) : { x: 0, y: 0, z: 0 },
       size: { x: 0.4, y: 0.4, z: 0.4 },
       properties: {
         specification: 'unspecified',
@@ -368,15 +392,10 @@ export function App() {
 
   const moveSelected = useCallback(async (dx: number, dy: number) => {
     if (!selected?.geometry) return
-    const current = selected.geometry.position
     await applyMutations([{
-      kind: 'moveEntity',
+      kind: 'translateEntity',
       entityId: selected.id,
-      position: {
-        x: current.x + dx,
-        y: current.y + dy,
-        z: current.z,
-      },
+      delta: { x: dx, y: dy, z: 0 },
     }], `Move ${selected.name}`)
   }, [applyMutations, selected])
 
@@ -449,18 +468,57 @@ export function App() {
         <section className="world-canvas" aria-label="World canvas">
           <div className="canvas-grid" />
           <div className="origin-marker">0,0</div>
-          {world.entities.filter((entity) => entity.geometry).map((entity) => (
-            <button
-              key={entity.id}
-              className={`canvas-entity ${entity.id === selectedId ? 'selected' : ''}`}
-              style={entityStyle(entity)}
-              onClick={() => setSelectedId(entity.id)}
-              title={entity.kind}
-            >
-              <strong>{entity.name}</strong>
-              <small>{entity.kind}</small>
-            </button>
-          ))}
+          <svg className="shape-layer" aria-label="Path and area geometry">
+            {world.entities
+              .filter((entity) => entity.geometry && entity.geometry.type !== 'box')
+              .map((entity) => {
+                const geometry = entity.geometry
+                if (!geometry || geometry.type === 'box') return null
+                const className = `shape-entity ${entity.id === selectedId ? 'selected' : ''}`
+                const handleSelect = () => setSelectedId(entity.id)
+                const handleKeyDown = (event: React.KeyboardEvent<SVGGElement>) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    handleSelect()
+                  }
+                }
+
+                return (
+                  <g
+                    key={entity.id}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={entity.name}
+                    className={className}
+                    onClick={handleSelect}
+                    onKeyDown={handleKeyDown}
+                  >
+                    {geometry.type === 'polygon' ? (
+                      <polygon points={pointsAttribute(entity)} />
+                    ) : (
+                      <>
+                        <polyline className="shape-hit-target" points={pointsAttribute(entity)} />
+                        <polyline points={pointsAttribute(entity)} />
+                      </>
+                    )}
+                  </g>
+                )
+              })}
+          </svg>
+          {world.entities
+            .filter((entity) => entity.geometry?.type === 'box')
+            .map((entity) => (
+              <button
+                key={entity.id}
+                className={`canvas-entity ${entity.id === selectedId ? 'selected' : ''}`}
+                style={entityStyle(entity)}
+                onClick={() => setSelectedId(entity.id)}
+                title={entity.kind}
+              >
+                <strong>{entity.name}</strong>
+                <small>{entity.kind}</small>
+              </button>
+            ))}
           {world.entities.length === 0 && (
             <div className="canvas-empty">
               <span>WORLD CANVAS</span>
@@ -535,8 +593,23 @@ export function App() {
                 <div className="detail-group">
                   <h3>Geometry</h3>
                   <dl>
-                    <div><dt>position</dt><dd>{selected.geometry.position.x.toFixed(1)}, {selected.geometry.position.y.toFixed(1)}, {selected.geometry.position.z.toFixed(1)}</dd></div>
-                    <div><dt>size</dt><dd>{selected.geometry.size.x} × {selected.geometry.size.y} × {selected.geometry.size.z}</dd></div>
+                    <div><dt>type</dt><dd>{selected.geometry.type}</dd></div>
+                    {selected.geometry.type === 'box' ? (
+                      <>
+                        <div><dt>position</dt><dd>{selected.geometry.position.x.toFixed(1)}, {selected.geometry.position.y.toFixed(1)}, {selected.geometry.position.z.toFixed(1)}</dd></div>
+                        <div><dt>size</dt><dd>{selected.geometry.size.x} × {selected.geometry.size.y} × {selected.geometry.size.z}</dd></div>
+                      </>
+                    ) : selected.geometry.type === 'polyline' ? (
+                      <>
+                        <div><dt>points</dt><dd>{selected.geometry.points.length}</dd></div>
+                        <div><dt>length</dt><dd>{polylineLength(selected.geometry.points).toFixed(2)} ft</dd></div>
+                      </>
+                    ) : (
+                      <>
+                        <div><dt>points</dt><dd>{selected.geometry.points.length}</dd></div>
+                        <div><dt>plan area</dt><dd>{polygonAreaXY(selected.geometry.points).toFixed(2)} sq ft</dd></div>
+                      </>
+                    )}
                   </dl>
                   <div className="move-pad">
                     <button onClick={() => moveSelected(0, -1)}>↑</button>
