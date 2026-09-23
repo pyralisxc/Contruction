@@ -429,7 +429,7 @@ export function App() {
     if (!response.ok) throw new Error(payload.error ?? 'Supply observation failed')
     setSupplyGraph(payload.supplyGraph)
     setStatus('Supply Graph refreshed')
-  }, [])
+  }, [projectApi])
 
 
   const applyProposal = useCallback(async (proposalId: string) => {
