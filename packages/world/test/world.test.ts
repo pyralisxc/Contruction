@@ -6,6 +6,8 @@ import {
   WorldConflictError,
   WorldValidationError,
   createBoxEntity,
+  createPolylineEntity,
+  createPolygonEntity,
   createEmptyWorld,
   createTransaction,
 } from '../src/index'
@@ -348,4 +350,87 @@ test('unknown mutation kinds fail instead of silently advancing revision', () =>
   }), WorldValidationError)
 
   assert.deepEqual(store.snapshot(), before)
+})
+
+
+test('polyline and polygon geometry validate and translate through the canonical transaction path', () => {
+  const store = new InMemoryWorldStore()
+
+  const route = createPolylineEntity({
+    id: 'route',
+    kind: 'route.test',
+    name: 'Route',
+    points: [
+      { x: 0, y: 0, z: 0 },
+      { x: 4, y: 0, z: 0 },
+      { x: 4, y: 3, z: 0 },
+    ],
+    actor: human,
+  })
+
+  const area = createPolygonEntity({
+    id: 'area',
+    kind: 'area.test',
+    name: 'Area',
+    points: [
+      { x: 0, y: 0, z: 0 },
+      { x: 6, y: 0, z: 0 },
+      { x: 6, y: 4, z: 0 },
+      { x: 0, y: 4, z: 0 },
+    ],
+    actor: human,
+  })
+
+  store.apply(createTransaction({
+    baseRevision: 0,
+    actor: human,
+    mutations: [
+      { kind: 'createEntity', entity: route },
+      { kind: 'createEntity', entity: area },
+    ],
+  }))
+
+  store.apply(createTransaction({
+    baseRevision: 1,
+    actor: human,
+    mutations: [
+      { kind: 'translateEntity', entityId: 'route', delta: { x: 2, y: 1, z: 0 } },
+      { kind: 'translateEntity', entityId: 'area', delta: { x: -1, y: 3, z: 0 } },
+    ],
+  }))
+
+  const world = store.snapshot()
+  const movedRoute = world.entities.find((entity) => entity.id === 'route')
+  const movedArea = world.entities.find((entity) => entity.id === 'area')
+
+  assert.deepEqual(
+    movedRoute?.geometry?.type === 'polyline' ? movedRoute.geometry.points[0] : null,
+    { x: 2, y: 1, z: 0 },
+  )
+  assert.deepEqual(
+    movedArea?.geometry?.type === 'polygon' ? movedArea.geometry.points[0] : null,
+    { x: -1, y: 3, z: 0 },
+  )
+})
+
+test('degenerate polygons fail closed at runtime', () => {
+  const store = new InMemoryWorldStore()
+
+  const bad = createPolygonEntity({
+    id: 'bad-polygon',
+    kind: 'area.test',
+    name: 'Bad polygon',
+    points: [
+      { x: 0, y: 0, z: 0 },
+      { x: 1, y: 0, z: 0 },
+      { x: 2, y: 0, z: 0 },
+    ],
+    actor: human,
+  })
+
+  assert.throws(() => store.apply(createTransaction({
+    baseRevision: 0,
+    actor: human,
+    mutations: [{ kind: 'createEntity', entity: bad }],
+  })), WorldValidationError)
 })
