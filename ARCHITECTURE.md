@@ -6,29 +6,31 @@ Product Truth is the durable authority. This architecture is intentionally evolu
 
 ## 1. Current generation objective
 
-The vNext generation begins by proving a small universal world instead of rebuilding the previous feature surface.
+The vNext generation proves a small universal physical World instead of rebuilding the previous feature surface.
 
-The first architecture must make these things ordinary:
+The current foundation makes these things ordinary:
 
 - stable physical entity identity;
 - hierarchy/composition;
-- geometry references;
-- ports and relationships;
-- explicit properties and provenance;
-- atomic semantic operations with revision checks;
-- one mutation path for human UI and MCP;
-- capability seams for future domain intelligence;
-- derived Build and Supply graphs without making them the canonical world.
+- primitive geometry behind a neutral geometry boundary;
+- explicit ports/interfaces and port-aware relationships;
+- properties and provenance;
+- atomic semantic operations with revision checks and runtime validation;
+- one mutation path for human UI, MCP, and capability packs;
+- durable proposal -> diff -> apply/discard workflows;
+- capability registration for domain intelligence;
+- derived Build and Supply graphs without making them competing authorities;
+- local-first sourcing observations kept separate from design truth.
 
-The first UI should remain deliberately small while these contracts become trustworthy.
+The UI remains deliberately small while these contracts earn depth.
 
 ## 2. Authority
 
 There is one canonical World state for a project revision.
 
-UI state, rendered meshes, analysis results, code checks, takeoffs, Build Graphs, Supply Graphs, indexes, caches, and external-provider observations are derived representations or observations. They do not become competing project authorities.
+UI state, rendered meshes, analysis results, code checks, takeoffs, Build Graphs, Supply Graphs, source observations, pending proposals, indexes, caches, and external-provider data are projections, observations, or pending change—not alternate project authorities.
 
-The World stores accepted project state. Operations change it.
+The World stores accepted project state. Semantic transactions change it.
 
 ## 3. Kernel concepts
 
@@ -38,33 +40,35 @@ A revisioned project container.
 
 ### Entity
 
-A stable identified thing in the world. Domain capabilities may attach richer typed meaning to entities, but the core does not require a closed union of every possible physical object.
+A stable identified thing in the world. Domain capabilities may attach richer meaning to entities without requiring the kernel to maintain a closed union of every possible physical object.
 
 ### Geometry
 
-Spatial representation associated with an entity. The kernel currently starts with simple primitives and a neutral geometry boundary. It must not assume the rendering engine is the future authoritative CAD kernel.
+Spatial representation associated with an entity. The current kernel starts with boxes only. The rendering representation is not assumed to be the future authoritative CAD kernel.
 
 ### Composition
 
-Entities may contain or be composed from other entities. Parts are ordinary first-class entities rather than text-only BOM rows.
+Entities can contain or be composed from other entities. Parts are first-class entities rather than text-only BOM rows.
 
 ### Port / interface
 
-A typed connection opportunity: electrical, fluid, mechanical, structural, data, spatial, or future domain-defined interface.
+A typed connection opportunity: fluid, electrical, mechanical, structural, data, spatial, or future domain-defined interface.
+
+Ports have stable IDs within an entity. Relations may target exact source/destination ports. Invalid port references fail closed, and removing a port removes relations that would otherwise dangle.
 
 ### Relation
 
-A typed relationship between entities. Examples include contains, supports, mounts, connects, supplies, depends-on, hosts, or domain-defined relations.
+A typed relationship between entities and optionally their ports. Current live examples include fluid and electrical network connections across capability packs.
 
 ### Property
 
-A value attached to an entity or relation with the expectation that important values can later retain provenance, confidence, units, and richer schemas.
+A primitive value attached to an entity or relation. Important domain properties may later grow richer schema/provenance owners rather than forcing every future value into this starter representation.
 
 ### Provenance
 
-Who or what introduced accepted state: user, agent, import, derived process, system default, or future professional/provider sources.
+Who or what introduced accepted state: user, agent, import, derived process, system default, provider, or future professional/provider sources.
 
-## 4. Operations
+## 4. Operations and mutation integrity
 
 All accepted mutations pass through semantic transactions.
 
@@ -76,22 +80,25 @@ A transaction has:
 - timestamp;
 - one or more mutations.
 
-The transaction is atomic. If any mutation is invalid, none of it is applied.
+The transaction is atomic. If any mutation is invalid, none of it is accepted.
 
 Revision mismatch fails closed rather than silently overwriting newer work.
 
-The initial mutation vocabulary is intentionally small:
+The kernel runtime validates transaction shape, entity identity, primitive geometry, finite values, properties, ports, parent references, and relation endpoints. TypeScript types and MCP schemas are not treated as sufficient protection by themselves.
+
+Current mutation vocabulary includes:
 
 - create entity;
-- update identity/name/kind;
-- move or resize primitive geometry;
+- rename entity;
+- move/resize primitive geometry;
 - set/remove property;
+- add/update/remove port;
 - add/remove relation;
 - remove entity.
 
-Domain capabilities should add semantic operations rather than teaching UI components to bypass this layer.
+Domain capabilities should expose semantic operations rather than teaching UI components to bypass this layer.
 
-## 5. Human / MCP parity
+## 5. Human / MCP parity and proposals
 
 The browser and MCP server act against the same server-owned World store and operation contracts.
 
@@ -101,56 +108,127 @@ MCP is a representation and command surface.
 
 Neither owns project state.
 
-High-consequence agent workflows should grow toward proposal -> diff/preview -> apply -> revert semantics, but small explicit transactions may apply directly when authorized.
+Low-consequence explicit actions may apply directly. Larger agent workflows can use a durable proposal flow:
+
+proposal -> validate against base revision -> structural diff -> human/agent inspection -> apply or discard.
+
+Previewing a proposal never mutates accepted World state. A stale proposal becomes non-applicable rather than silently rebasing itself.
 
 ## 6. Capability packs
 
 The kernel stays small. Domain intelligence belongs behind capability boundaries.
 
-Examples:
-
-- construction;
-- structural;
-- electrical;
-- water/plumbing;
-- energy/solar;
-- landscape/hydrology;
-- agriculture;
-- production/equipment;
-- fabrication;
-- code/rules;
-- estimating/sourcing.
-
 A capability can contribute:
 
-- entity schemas or traits;
+- semantic entity kinds;
 - semantic operations;
 - validators;
 - derived representations;
 - analysis;
 - exporters/importers;
-- Build Graph derivation;
+- Build Graph requirement providers;
 - Supply Graph logic.
 
-Capabilities may begin inside this repository. They earn separate repositories or runtimes only when independent reuse, complexity, licensing, runtime, or ownership justifies it.
+The runtime now has a capability registry. Capability packs can begin inside this repository and earn separate repositories/runtimes only when independent reuse, complexity, licensing, runtime, or ownership justifies it.
 
-## 7. Derived graphs
+### Current capability proofs
 
-### Build Graph
+#### Construction
 
-Derived requirements needed to create or change accepted World state: assemblies, parts, materials, tools, operations, sequencing, and quantities.
+Creates a conceptual shed as one atomic semantic transaction:
 
-### Supply Graph
+- parent structure;
+- floor;
+- four walls;
+- conceptual roof.
 
-Resolution of Build Graph requirements against inventory, salvage, local suppliers, fabricators, regional/online providers, substitutes, and self-fabrication.
+It contributes conceptual material/part requirements with explicit basis and assumptions rather than presenting them as engineered quantities.
 
-These graphs may become persistent snapshots for audit or planning, but they are not alternate copies of the World.
+#### Water
 
-## 8. Geometry boundary
+Creates a connected rainwater system:
 
-vNext starts with a minimal geometry vocabulary sufficient to exercise world operations and spatial UI.
+- storage tank;
+- pipe run;
+- pump;
+- water inlet/outlet/overflow ports;
+- pump electrical input;
+- validated fluid relations.
 
-The architecture must leave room for:
+It contributes conceptual equipment/material requirements with unresolved engineering/code assumptions kept explicit.
+
+#### Energy / Electrical
+
+Creates a connected solar microgrid:
+
+- PV array;
+- battery;
+- inverter;
+- distribution panel;
+- DC/AC ports and relations.
+
+It can connect its distribution output to an existing power-input port created by another capability, proving cross-capability system composition.
+
+Construction, Water, and Energy are examples—not privileged kernel domains.
+
+## 7. Build Graph
+
+The Build Graph is derived from accepted World state.
+
+It can combine:
+
+- explicit part/material entities in the World;
+- requirement providers registered by capability packs.
+
+Requirements can carry:
+
+- source/parent identity;
+- requirement kind;
+- name/specification;
+- design quantity/unit;
+- acquisition posture;
+- confidence;
+- derivation basis;
+- assumptions;
+- capability provenance.
+
+Current capability-derived requirements are intentionally marked `conceptual`.
+
+Build Graph derivation must not mutate World truth.
+
+## 8. Supply Graph
+
+The Supply Graph resolves Build requirements against timestamped supply observations.
+
+Supply observations are stored separately from World truth because inventory, price, distance, lead time, and provider availability are volatile.
+
+Current source kinds include:
+
+- owned inventory;
+- reuse/salvage;
+- self-fabrication;
+- local fabricator;
+- local trade supplier;
+- local retail;
+- regional;
+- online.
+
+Resolution is local-first by default. Matching currently requires an explicit requirement link, exact normalized specification, or exact normalized name; similarity alone does not create a substitution.
+
+The allocator:
+
+- combines multiple sources to cover one requirement;
+- tracks partial coverage and shortfall explicitly;
+- maintains global remaining quantity so one observed stock pool cannot be allocated twice;
+- exposes estimated allocation cost when unit price is known.
+
+Substitution intelligence, work-package route optimization, packaging, taxes, delivery, and provider freshness policy remain later slices.
+
+## 9. Geometry boundary
+
+vNext currently uses simple box geometry only.
+
+The architecture leaves room for:
 
 - curves and paths;
 - profiles;
@@ -162,65 +240,56 @@ The architecture must leave room for:
 - large-world partitioning;
 - fabrication tolerances.
 
-Rendering geometry and authoritative geometric computation are separable.
+Rendering geometry and authoritative geometric computation remain separable.
 
-If a mature external or native geometry kernel becomes appropriate, it should be adoptable without replacing entity identity, operations, or Product Truth.
+If a mature external/native geometry kernel becomes appropriate, it should be adoptable without replacing entity identity, semantic operations, or Product Truth.
 
-## 9. Persistence and history
+## 10. Persistence and history
 
-The target posture is:
+The current proving posture is:
 
-current canonical snapshot + revision identity + durable operation/checkpoint history.
+current canonical snapshot + revision identity + durable accepted transaction history.
 
-The world must not require replaying an eternal event stream for ordinary reads.
+The World uses a versioned local file store and atomic temporary-file replacement.
 
-The current vNext slice uses a server-owned file-backed world. Each accepted transaction atomically persists the latest canonical snapshot together with durable local operation history.
+Supply observations and pending proposals have separate versioned stores.
 
-The file format is deliberately versioned and minimal. It is a proving format, not a promise that JSON-file persistence is the final production storage architecture.
+Ordinary World reads use the current snapshot; they do not replay full history.
 
-Ordinary reads use the current snapshot; they do not replay the full history.
+These JSON-backed stores are proving persistence, not the final production storage commitment.
 
-## 10. External solvers and providers
+## 11. External solvers and providers
 
-Specialist engines may calculate against exported projections of the world.
+Specialist engines may calculate against exported projections of the World.
 
 Results return with source, version, assumptions, inputs, and confidence where material.
 
 Retailer inventory, prices, standards, code text, manufacturer catalogs, and similar external data are provider observations, not timeless kernel data.
 
-## 11. Current executable slice
+## 12. Current Studio
 
-The first vNext slice intentionally contains:
+The Studio deliberately exposes only enough UI to exercise the architecture:
 
-- typed World model;
-- atomic revisioned transactions;
-- file-backed server-owned World store;
-- durable accepted transaction history;
-- REST transaction surface for the browser;
-- MCP tools backed by the same store and transaction logic;
-- first derived Build Graph from part/material entities;
-- Build Graph REST and MCP projections;
-- minimal React studio;
-- simple 2D primitive visualization;
-- selection and inspection;
-- creation/movement through transactions;
-- hierarchy sufficient to represent parts;
-- visible unresolved Build Graph requirements.
+- create a semantic construction shed;
+- create a connected rainwater system;
+- create a solar microgrid and optionally connect it to a selected electrical load port;
+- create generic equipment;
+- select/move primitive entities;
+- inspect properties, ports, relations, provenance;
+- add first-class required parts;
+- inspect Build and Supply resolution;
+- record owned inventory/local source observations;
+- review/apply/discard pending proposals.
 
-It intentionally does not yet restore:
+Current implementation depth must never be mistaken for product scope.
 
-- legacy BIM types;
-- Three.js;
-- old framing engine;
-- supplier integrations;
-- code packs;
-- blueprint UI;
-- legacy server persistence;
-- the previous mode-heavy editor shell.
+## 13. Preserved prototype evidence
 
-Those are donor knowledge in the preserved prototype and can be reintroduced only through vNext contracts.
+The previous BIM-lite prototype remains at `archive/prototype-v0`.
 
-## 12. Development law
+Its construction geometry, framing, terrain, assemblies, takeoff, rules, and UX lessons are donor evidence. They should be reintroduced only through vNext contracts rather than resurrecting legacy ownership.
+
+## 14. Development law
 
 Contractor Hub uses rapid vertical iteration.
 
