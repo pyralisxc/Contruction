@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import type { BuildGraph } from '../../build/src/index'
-import { deriveSupplyGraph, type SupplyObservation } from '../src/index'
+import { deriveSupplyGraph, requirementSignature, type SupplyObservation } from '../src/index'
 
 const buildGraph: BuildGraph = {
   worldId: 'world-test',
@@ -33,6 +33,7 @@ function observation(input: Partial<SupplyObservation> & Pick<SupplyObservation,
     quantityAvailable: 10,
     unit: 'each',
     requirementId: 'requirement:bolt',
+    requirementSignature: requirementSignature(buildGraph.requirements[0]),
     ...input,
   }
 }
@@ -154,4 +155,41 @@ test('similar-looking observations do not become substitutions without an explic
 
   assert.equal(graph.resolutions[0].status, 'unresolved')
   assert.equal(graph.resolutions[0].candidates.length, 0)
+})
+
+
+test('an explicitly linked source stops matching after the requirement specification changes', () => {
+  const recorded = observation({
+    id: 'linked-stock',
+    sourceKind: 'inventory',
+    sourceName: 'Parts bin',
+    quantityAvailable: 10,
+  })
+
+  const changedGraph: BuildGraph = {
+    ...buildGraph,
+    requirements: [{
+      ...buildGraph.requirements[0],
+      specification: '1/4-20 stainless high-strength rated fastener',
+    }],
+  }
+
+  const graph = deriveSupplyGraph(changedGraph, [recorded])
+  assert.equal(graph.resolutions[0].status, 'unresolved')
+  assert.equal(graph.resolutions[0].candidates.length, 0)
+})
+
+test('unversioned requirement links do not bypass exact matching safeguards', () => {
+  const graph = deriveSupplyGraph(buildGraph, [{
+    id: 'legacy-link',
+    sourceId: 'inventory:legacy',
+    sourceName: 'Legacy inventory',
+    sourceKind: 'inventory',
+    observedAt: '2026-09-22T01:00:00.000Z',
+    requirementId: 'requirement:bolt',
+    quantityAvailable: 100,
+    unit: 'each',
+  }])
+
+  assert.equal(graph.resolutions[0].status, 'unresolved')
 })
