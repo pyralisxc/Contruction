@@ -606,3 +606,145 @@ test('accepted property edits record value-level knowledge provenance', () => {
   assert.equal('capacity' in current.properties, false)
   assert.equal(current.propertyKnowledge?.capacity, undefined)
 })
+
+
+test('connectPorts creates validated relation provenance from the accepting transaction', () => {
+  const store = new InMemoryWorldStore()
+  const tank = createBoxEntity({
+    id: 'connect-tank',
+    kind: 'water.storage',
+    name: 'Tank',
+    position: { x: 0, y: 0, z: 0 },
+    size: { x: 2, y: 2, z: 3 },
+    ports: [{ id: 'water-out', kind: 'fluid.water.out', name: 'Outlet' }],
+    actor: human,
+  })
+  const pump = createBoxEntity({
+    id: 'connect-pump',
+    kind: 'water.pump',
+    name: 'Pump',
+    position: { x: 4, y: 0, z: 0 },
+    size: { x: 1, y: 1, z: 1 },
+    ports: [{ id: 'water-in', kind: 'fluid.water.in', name: 'Inlet' }],
+    actor: human,
+  })
+
+  store.apply(createTransaction({
+    baseRevision: 0,
+    actor: human,
+    mutations: [
+      { kind: 'createEntity', entity: tank },
+      { kind: 'createEntity', entity: pump },
+    ],
+  }))
+
+  store.apply(createTransaction({
+    baseRevision: 1,
+    actor: human,
+    at: '2026-09-23T03:00:00.000Z',
+    mutations: [{
+      kind: 'connectPorts',
+      relationId: 'semantic-water-link',
+      fromEntityId: tank.id,
+      fromPortId: 'water-out',
+      toEntityId: pump.id,
+      toPortId: 'water-in',
+    }],
+  }))
+
+  const relation = store.snapshot().relations[0]
+  assert.equal(relation.kind, 'fluid.connects')
+  assert.equal(relation.fromPortId, 'water-out')
+  assert.equal(relation.toPortId, 'water-in')
+  assert.equal(relation.provenance.origin, 'user')
+  assert.equal(relation.provenance.actorId, human.id)
+})
+
+test('connectPorts rejects incompatible domains, wrong direction, and duplicates', () => {
+  const store = new InMemoryWorldStore()
+  const source = createBoxEntity({
+    id: 'source',
+    kind: 'source',
+    name: 'Source',
+    position: { x: 0, y: 0, z: 0 },
+    size: { x: 1, y: 1, z: 1 },
+    ports: [
+      { id: 'electric-out', kind: 'electrical.ac.out', name: 'AC out' },
+      { id: 'electric-in', kind: 'electrical.ac.in', name: 'AC in' },
+    ],
+    actor: human,
+  })
+  const target = createBoxEntity({
+    id: 'target',
+    kind: 'target',
+    name: 'Target',
+    position: { x: 2, y: 0, z: 0 },
+    size: { x: 1, y: 1, z: 1 },
+    ports: [
+      { id: 'water-in', kind: 'fluid.water.in', name: 'Water in' },
+      { id: 'electric-in-target', kind: 'electrical.power.in', name: 'Power in' },
+    ],
+    actor: human,
+  })
+
+  store.apply(createTransaction({
+    baseRevision: 0,
+    actor: human,
+    mutations: [
+      { kind: 'createEntity', entity: source },
+      { kind: 'createEntity', entity: target },
+    ],
+  }))
+
+  assert.throws(() => store.apply(createTransaction({
+    baseRevision: 1,
+    actor: human,
+    mutations: [{
+      kind: 'connectPorts',
+      relationId: 'wrong-domain',
+      fromEntityId: source.id,
+      fromPortId: 'electric-out',
+      toEntityId: target.id,
+      toPortId: 'water-in',
+    }],
+  })), WorldValidationError)
+
+  assert.throws(() => store.apply(createTransaction({
+    baseRevision: 1,
+    actor: human,
+    mutations: [{
+      kind: 'connectPorts',
+      relationId: 'wrong-direction',
+      fromEntityId: source.id,
+      fromPortId: 'electric-in',
+      toEntityId: target.id,
+      toPortId: 'electric-in-target',
+    }],
+  })), WorldValidationError)
+
+  store.apply(createTransaction({
+    baseRevision: 1,
+    actor: human,
+    mutations: [{
+      kind: 'connectPorts',
+      relationId: 'valid-power',
+      fromEntityId: source.id,
+      fromPortId: 'electric-out',
+      toEntityId: target.id,
+      toPortId: 'electric-in-target',
+    }],
+  }))
+
+  assert.throws(() => store.apply(createTransaction({
+    baseRevision: 2,
+    actor: human,
+    mutations: [{
+      kind: 'connectPorts',
+      relationId: 'duplicate-power',
+      fromEntityId: source.id,
+      fromPortId: 'electric-out',
+      toEntityId: target.id,
+      toPortId: 'electric-in-target',
+    }],
+  })), WorldValidationError)
+})
