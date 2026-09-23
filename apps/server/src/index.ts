@@ -133,6 +133,22 @@ app.get('/api/capabilities', (_req, res) => {
 })
 
 const propertyValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()])
+const propertyKnowledgeInputSchema = z.object({
+  basis: z.enum([
+    'chosen',
+    'proposed',
+    'imported',
+    'manufacturer',
+    'calculated',
+    'inferred',
+    'defaulted',
+    'rule-required',
+    'provider',
+    'unknown',
+  ]).optional(),
+  confidence: z.enum(['low', 'medium', 'high', 'verified']).optional(),
+  note: z.string().optional(),
+}).optional()
 
 const actorSchema = z.object({
   kind: z.enum(['human', 'agent', 'automation', 'system']),
@@ -240,6 +256,7 @@ const proposalChangeSchema = z.discriminatedUnion('kind', [
     entityId: z.string().min(1),
     key: z.string().min(1),
     value: propertyValueSchema,
+    knowledge: propertyKnowledgeInputSchema,
   }),
   z.object({
     kind: z.literal('removeProperty'),
@@ -397,6 +414,7 @@ function proposalTransaction(
           entityId: change.entityId,
           key: change.key,
           value: change.value,
+          knowledge: change.knowledge,
         }
       case 'removeProperty':
         return {
@@ -1137,13 +1155,14 @@ const mcpHandler = createMcpHandler(() => {
   server.registerTool(
     'world_set_property',
     {
-      description: 'Set one primitive property on an existing entity.',
+      description: 'Set one primitive property on an existing entity and optionally record value-level knowledge metadata.',
       inputSchema: z.object({
         baseRevision: z.number().int().nonnegative(),
         actor: actorSchema.optional(),
         entityId: z.string().min(1),
         key: z.string().min(1),
         value: propertyValueSchema,
+        knowledge: propertyKnowledgeInputSchema,
       }),
     },
     async (input) => {
@@ -1157,6 +1176,7 @@ const mcpHandler = createMcpHandler(() => {
           entityId: input.entityId,
           key: input.key,
           value,
+          knowledge: input.knowledge,
         }],
         note: 'MCP set property',
       }))
