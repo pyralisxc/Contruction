@@ -46,3 +46,19 @@ test('unknown project ids cannot escape the project registry boundary', () => {
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+
+test('custom project ids must be filesystem-safe', () => {
+  const root = mkdtempSync(join(tmpdir(), 'contractor-projects-'))
+
+  try {
+    const registry = new FileProjectRegistry(root)
+    assert.throws(
+      () => registry.create('Unsafe', { id: '../unsafe' }),
+      /Invalid project id/,
+    )
+    assert.equal(registry.list().length, 0)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
