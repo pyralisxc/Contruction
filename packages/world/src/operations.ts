@@ -9,6 +9,7 @@ import {
   WorldTransaction,
   WorldValidationError,
 } from './types'
+import { checkPortCompatibility, defaultConnectionKind } from './ports'
 
 function cloneWorld(world: WorldDocument): WorldDocument {
   return structuredClone(world)
@@ -329,6 +330,47 @@ function applyMutation(world: WorldDocument, mutation: WorldMutation, transactio
         (relation.fromEntityId === mutation.entityId && relation.fromPortId === mutation.portId) ||
         (relation.toEntityId === mutation.entityId && relation.toPortId === mutation.portId)
       ))
+      return
+    }
+    case 'connectPorts': {
+      requireNonEmpty('relationId', mutation.relationId)
+      if (mutation.relationKind !== undefined) requireNonEmpty('relationKind', mutation.relationKind)
+      assertRelationDoesNotExist(world, mutation.relationId)
+
+      const fromEntity = entityById(world, mutation.fromEntityId)
+      const toEntity = entityById(world, mutation.toEntityId)
+      const fromPort = portById(fromEntity, mutation.fromPortId)
+      const toPort = portById(toEntity, mutation.toPortId)
+      const compatibility = checkPortCompatibility(fromPort, toPort)
+
+      if (!compatibility.compatible) {
+        throw new WorldValidationError(
+          compatibility.reason ?? `Ports are not compatible: ${fromPort.kind} -> ${toPort.kind}`,
+        )
+      }
+
+      const duplicate = world.relations.some((relation) =>
+        relation.fromEntityId === mutation.fromEntityId &&
+        relation.fromPortId === mutation.fromPortId &&
+        relation.toEntityId === mutation.toEntityId &&
+        relation.toPortId === mutation.toPortId
+      )
+      if (duplicate) {
+        throw new WorldValidationError(
+          `Ports are already connected: ${mutation.fromEntityId}/${mutation.fromPortId} -> ${mutation.toEntityId}/${mutation.toPortId}`,
+        )
+      }
+
+      world.relations.push({
+        id: mutation.relationId,
+        kind: mutation.relationKind ?? defaultConnectionKind(fromPort),
+        fromEntityId: mutation.fromEntityId,
+        fromPortId: mutation.fromPortId,
+        toEntityId: mutation.toEntityId,
+        toPortId: mutation.toPortId,
+        properties: structuredClone(mutation.properties ?? {}),
+        provenance: createProvenance(transaction),
+      })
       return
     }
     case 'addRelation': {
