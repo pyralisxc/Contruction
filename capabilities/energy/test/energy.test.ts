@@ -69,3 +69,47 @@ test('energy capability contributes transparent conceptual equipment requirement
   assert.equal(graph.requirements.find((requirement) => requirement.name === 'Solar modules')?.quantity, 8)
   assert.equal(graph.requirements.every((requirement) => requirement.capabilityId === 'energy'), true)
 })
+
+
+test('editing solar panel count updates derived module quantity', () => {
+  const store = new InMemoryWorldStore(createEmptyWorld())
+  store.apply(createSolarMicrogridTransaction(0, {
+    panelCount: 6,
+    panelWatts: 400,
+    batteryKwh: 10,
+    inverterKw: 5,
+  }, human))
+
+  const registry = new CapabilityRegistry()
+  registry.register(energyCapability)
+
+  const array = store.snapshot().entities.find((entity) => entity.kind === 'energy.solar.array')
+  assert.ok(array)
+
+  store.apply({
+    id: 'increase-panel-count',
+    baseRevision: 1,
+    actor: human,
+    createdAt: '2026-09-23T02:10:00.000Z',
+    mutations: [{
+      kind: 'setProperty',
+      entityId: array.id,
+      key: 'panelCount',
+      value: 10,
+      knowledge: {
+        basis: 'chosen',
+        confidence: 'high',
+      },
+    }],
+  })
+
+  const graph = deriveBuildGraph(
+    store.snapshot(),
+    '2026-09-23T02:10:01.000Z',
+    registry.buildRequirementProviders(),
+  )
+  const modules = graph.requirements.find((requirement) => requirement.name === 'Solar modules')
+
+  assert.equal(modules?.quantity, 10)
+  assert.equal(modules?.specification, '400 W module, exact electrical/mechanical specification unresolved')
+})
