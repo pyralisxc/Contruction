@@ -56,3 +56,57 @@ test('construction requirements remain explicitly conceptual', () => {
   assert.equal(graph.requirements.every((requirement) => requirement.confidence === 'conceptual'), true)
   assert.equal(graph.requirements.some((requirement) => requirement.assumptions?.length), true)
 })
+
+
+test('editing wall path geometry immediately changes derived material requirements', () => {
+  const store = new InMemoryWorldStore(createEmptyWorld())
+  store.apply(createConceptShedTransaction(0, {
+    name: 'Editable shed',
+    width: 12,
+    depth: 10,
+    wallHeight: 8,
+  }, human))
+
+  const registry = new CapabilityRegistry()
+  registry.register(constructionCapability)
+
+  const wall = store.snapshot().entities.find(
+    (entity) => entity.kind === 'construction.wall' && entity.name.includes('north wall'),
+  )
+  assert.ok(wall)
+  assert.equal(wall.geometry?.type, 'polyline')
+
+  const before = deriveBuildGraph(
+    store.snapshot(),
+    '2026-09-23T00:00:00.000Z',
+    registry.buildRequirementProviders(),
+  )
+  const beforeSheathing = before.requirements.find(
+    (requirement) => requirement.id === `construction:${wall.id}:sheathing`,
+  )
+  assert.equal(beforeSheathing?.quantity, 96)
+
+  const points = wall.geometry?.type === 'polyline' ? wall.geometry.points : []
+  store.apply({
+    id: 'stretch-wall',
+    baseRevision: 1,
+    actor: human,
+    createdAt: '2026-09-23T00:01:00.000Z',
+    mutations: [{
+      kind: 'setGeometryPoint',
+      entityId: wall.id,
+      index: 1,
+      point: { x: points[1].x + 4, y: points[1].y, z: points[1].z },
+    }],
+  })
+
+  const after = deriveBuildGraph(
+    store.snapshot(),
+    '2026-09-23T00:01:01.000Z',
+    registry.buildRequirementProviders(),
+  )
+  const afterSheathing = after.requirements.find(
+    (requirement) => requirement.id === `construction:${wall.id}:sheathing`,
+  )
+  assert.equal(afterSheathing?.quantity, 128)
+})
