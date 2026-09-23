@@ -17,6 +17,7 @@ export interface SupplyObservation {
   sourceKind: SupplySourceKind
   observedAt: string
   requirementId?: string
+  requirementSignature?: string
   specification?: string
   name?: string
   quantityAvailable: number
@@ -97,11 +98,25 @@ function normalize(value?: string): string {
   return value?.trim().toLowerCase().replace(/\s+/g, ' ') ?? ''
 }
 
+export function requirementSignature(requirement: BuildRequirement): string {
+  return [
+    requirement.kind,
+    requirement.name,
+    requirement.specification ?? '',
+    requirement.unit,
+  ].map((value) => normalize(String(value))).join('|')
+}
+
 function matchBasis(
   requirement: BuildRequirement,
   observation: SupplyObservation,
 ): SupplyCandidate['matchBasis'] | null {
-  if (observation.requirementId === requirement.id) return 'requirement-id'
+  if (
+    observation.requirementId === requirement.id &&
+    observation.requirementSignature === requirementSignature(requirement)
+  ) {
+    return 'requirement-id'
+  }
 
   const requirementSpec = normalize(requirement.specification)
   const observationSpec = normalize(observation.specification)
