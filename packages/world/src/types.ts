@@ -192,6 +192,16 @@ export type WorldMutation =
       portId: string
     }
   | {
+      kind: 'connectPorts'
+      relationId: RelationId
+      relationKind?: string
+      fromEntityId: EntityId
+      fromPortId: string
+      toEntityId: EntityId
+      toPortId: string
+      properties?: PropertyBag
+    }
+  | {
       kind: 'addRelation'
       relation: WorldRelation
     }
