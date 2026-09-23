@@ -30,6 +30,29 @@ export type Geometry = BoxGeometry | PolylineGeometry | PolygonGeometry
 export type PropertyValue = string | number | boolean | null
 export type PropertyBag = Record<string, PropertyValue>
 
+export type PropertyKnowledgeBasis =
+  | 'chosen'
+  | 'proposed'
+  | 'imported'
+  | 'manufacturer'
+  | 'calculated'
+  | 'inferred'
+  | 'defaulted'
+  | 'rule-required'
+  | 'provider'
+  | 'unknown'
+
+export type PropertyConfidence = 'low' | 'medium' | 'high' | 'verified'
+
+export interface PropertyKnowledge {
+  basis: PropertyKnowledgeBasis
+  provenance: Provenance
+  confidence?: PropertyConfidence
+  note?: string
+}
+
+export type PropertyKnowledgeBag = Record<string, PropertyKnowledge>
+
 export type ProvenanceOrigin =
   | 'user'
   | 'agent'
@@ -59,6 +82,7 @@ export interface WorldEntity {
   parentId?: EntityId
   geometry?: Geometry
   properties: PropertyBag
+  propertyKnowledge?: PropertyKnowledgeBag
   ports: Port[]
   provenance: Provenance
 }
@@ -140,6 +164,11 @@ export type WorldMutation =
       entityId: EntityId
       key: string
       value: PropertyValue
+      knowledge?: {
+        basis?: PropertyKnowledgeBasis
+        confidence?: PropertyConfidence
+        note?: string
+      }
     }
   | {
       kind: 'removeProperty'
