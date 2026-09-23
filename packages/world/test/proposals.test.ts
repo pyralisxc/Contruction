@@ -44,7 +44,8 @@ test('proposal preview produces a diff without mutating accepted World state', (
   const preview = previewTransaction(accepted, proposal)
 
   assert.equal(preview.diff.changedEntities.length, 1)
-  assert.deepEqual(preview.previewWorld.entities[0].geometry?.position, { x: 5, y: 2, z: 0 })
+  assert.equal(preview.previewWorld.entities[0].geometry?.type, 'box')
+  assert.deepEqual(preview.previewWorld.entities[0].geometry?.type === 'box' ? preview.previewWorld.entities[0].geometry.position : null, { x: 5, y: 2, z: 0 })
   assert.deepEqual(store.snapshot(), accepted)
 })
 
