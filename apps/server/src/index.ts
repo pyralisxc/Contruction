@@ -24,6 +24,7 @@ import {
 import {
   conceptShedInputSchema,
   proposalInputSchema,
+  proposalTransaction,
   rainwaterSystemInputSchema,
   solarMicrogridInputSchema,
   supplyObservationInputSchema,
@@ -179,7 +180,7 @@ app.post('/api/projects/:projectId/proposals', (req, res) => {
   try {
     const projectId = projectIdFrom(req.params)
     const input = proposalInputSchema.parse(req.body)
-    const proposal = (await import('./contracts')).proposalTransaction(input)
+    const proposal = proposalTransaction(input)
     const preview = previewTransaction(
       projects.runtime(projectId).store.snapshot(),
       proposal,
