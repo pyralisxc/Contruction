@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from 'react'
 
 import type { BuildGraph, BuildRequirement } from '../../../packages/build/src/index'
 import type { SupplyGraph } from '../../../packages/supply/src/index'
@@ -476,7 +476,7 @@ export function App() {
                 if (!geometry || geometry.type === 'box') return null
                 const className = `shape-entity ${entity.id === selectedId ? 'selected' : ''}`
                 const handleSelect = () => setSelectedId(entity.id)
-                const handleKeyDown = (event: React.KeyboardEvent<SVGGElement>) => {
+                const handleKeyDown = (event: KeyboardEvent<SVGGElement>) => {
                   if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault()
                     handleSelect()
