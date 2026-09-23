@@ -214,6 +214,23 @@ const proposalChangeSchema = z.discriminatedUnion('kind', [
     delta: vec3Schema,
   }),
   z.object({
+    kind: z.literal('setGeometryPoint'),
+    entityId: z.string().min(1),
+    index: z.number().int().nonnegative(),
+    point: vec3Schema,
+  }),
+  z.object({
+    kind: z.literal('insertGeometryPoint'),
+    entityId: z.string().min(1),
+    index: z.number().int().nonnegative(),
+    point: vec3Schema,
+  }),
+  z.object({
+    kind: z.literal('removeGeometryPoint'),
+    entityId: z.string().min(1),
+    index: z.number().int().nonnegative(),
+  }),
+  z.object({
     kind: z.literal('renameEntity'),
     entityId: z.string().min(1),
     name: z.string().min(1),
@@ -347,6 +364,26 @@ function proposalTransaction(
           kind: 'translateEntity',
           entityId: change.entityId,
           delta: change.delta,
+        }
+      case 'setGeometryPoint':
+        return {
+          kind: 'setGeometryPoint',
+          entityId: change.entityId,
+          index: change.index,
+          point: change.point,
+        }
+      case 'insertGeometryPoint':
+        return {
+          kind: 'insertGeometryPoint',
+          entityId: change.entityId,
+          index: change.index,
+          point: change.point,
+        }
+      case 'removeGeometryPoint':
+        return {
+          kind: 'removeGeometryPoint',
+          entityId: change.entityId,
+          index: change.index,
         }
       case 'renameEntity':
         return {
@@ -998,6 +1035,98 @@ const mcpHandler = createMcpHandler(() => {
           delta: input.delta,
         }],
         note: 'MCP translate entity',
+      }))
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      }
+    },
+  )
+
+
+  server.registerTool(
+    'world_set_geometry_point',
+    {
+      description: 'Move one path/polygon vertex to an exact point through the canonical transaction path.',
+      inputSchema: z.object({
+        baseRevision: z.number().int().nonnegative(),
+        actor: actorSchema.optional(),
+        entityId: z.string().min(1),
+        index: z.number().int().nonnegative(),
+        point: vec3Schema,
+      }),
+    },
+    async (input) => {
+      const actor = transactionActor(input.actor)
+      const result = store.apply(createTransaction({
+        baseRevision: input.baseRevision,
+        actor,
+        mutations: [{
+          kind: 'setGeometryPoint',
+          entityId: input.entityId,
+          index: input.index,
+          point: input.point,
+        }],
+        note: 'MCP edit geometry point',
+      }))
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      }
+    },
+  )
+
+  server.registerTool(
+    'world_insert_geometry_point',
+    {
+      description: 'Insert a vertex into path/polygon geometry through the canonical transaction path.',
+      inputSchema: z.object({
+        baseRevision: z.number().int().nonnegative(),
+        actor: actorSchema.optional(),
+        entityId: z.string().min(1),
+        index: z.number().int().nonnegative(),
+        point: vec3Schema,
+      }),
+    },
+    async (input) => {
+      const actor = transactionActor(input.actor)
+      const result = store.apply(createTransaction({
+        baseRevision: input.baseRevision,
+        actor,
+        mutations: [{
+          kind: 'insertGeometryPoint',
+          entityId: input.entityId,
+          index: input.index,
+          point: input.point,
+        }],
+        note: 'MCP insert geometry point',
+      }))
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      }
+    },
+  )
+
+  server.registerTool(
+    'world_remove_geometry_point',
+    {
+      description: 'Remove a path/polygon vertex when the remaining geometry stays valid.',
+      inputSchema: z.object({
+        baseRevision: z.number().int().nonnegative(),
+        actor: actorSchema.optional(),
+        entityId: z.string().min(1),
+        index: z.number().int().nonnegative(),
+      }),
+    },
+    async (input) => {
+      const actor = transactionActor(input.actor)
+      const result = store.apply(createTransaction({
+        baseRevision: input.baseRevision,
+        actor,
+        mutations: [{
+          kind: 'removeGeometryPoint',
+          entityId: input.entityId,
+          index: input.index,
+        }],
+        note: 'MCP remove geometry point',
       }))
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
