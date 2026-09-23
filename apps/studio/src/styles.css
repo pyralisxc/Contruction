@@ -571,3 +571,75 @@ dd {
   stroke-width: 1.5;
   vector-effect: non-scaling-stroke;
 }
+
+
+.vertex-editor {
+  margin-top: 14px;
+  display: grid;
+  gap: 7px;
+}
+
+.vertex-editor h4 {
+  margin: 0 0 2px;
+  color: #8493a8;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.vertex-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid #252e3a;
+  border-radius: 7px;
+  background: #11161d;
+}
+
+.vertex-label {
+  align-self: center;
+  color: #7f8da3;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.vertex-row label {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  gap: 4px;
+  align-items: center;
+  color: #68778c;
+  font-size: 10px;
+}
+
+.vertex-row input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #303b49;
+  border-radius: 5px;
+  background: #0d1218;
+  color: #dce4ee;
+  padding: 5px 6px;
+}
+
+.vertex-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 5px;
+  justify-content: flex-end;
+}
+
+.vertex-actions button {
+  border: 1px solid #344050;
+  background: #171c24;
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.vertex-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
