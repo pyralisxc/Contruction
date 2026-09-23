@@ -2,7 +2,6 @@ import { resolve } from 'node:path'
 
 import { createMcpExpressApp } from '@modelcontextprotocol/express'
 import { toNodeHandler } from '@modelcontextprotocol/node'
-import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
 import * as z from 'zod/v4'
 
 import {
@@ -17,1318 +16,310 @@ import {
   createRainwaterSystemTransaction,
   waterCapability,
 } from '../../../capabilities/water/src/index'
-import { deriveBuildGraph } from '../../../packages/build/src/index'
 import { CapabilityRegistry } from '../../../packages/capabilities/src/index'
 import {
-  FileSupplyObservationStore,
-  SupplyObservation,
-  deriveSupplyGraph,
-  requirementSignature,
-} from '../../../packages/supply/src/index'
-import {
-  ActorRef,
-  FileProposalStore,
-  FileWorldStore,
-  PropertyValue,
-  WorldMutation,
-  WorldTransaction,
-  createBoxEntity,
-  createPolylineEntity,
-  createPolygonEntity,
-  createEmptyWorld,
-  createId,
-  createTransaction,
   previewTransaction,
+  type WorldTransaction,
 } from '../../../packages/world/src/index'
+import {
+  conceptShedInputSchema,
+  proposalInputSchema,
+  rainwaterSystemInputSchema,
+  solarMicrogridInputSchema,
+  supplyObservationInputSchema,
+} from './contracts'
+import {
+  normalizeSupplyObservation,
+  proposalViews,
+} from './helpers'
+import { createContractorMcpHandler } from './mcp'
+import { ProjectRuntimeManager } from './projectRuntime'
 
 const PORT = Number(process.env.PORT ?? 3000)
-const WORLD_PATH = resolve(process.env.CONTRACTOR_WORLD_PATH ?? '.data/world.json')
-const SUPPLY_PATH = resolve(process.env.CONTRACTOR_SUPPLY_PATH ?? '.data/supply-observations.json')
-const PROPOSAL_PATH = resolve(process.env.CONTRACTOR_PROPOSAL_PATH ?? '.data/proposals.json')
+const DATA_ROOT = resolve(process.env.CONTRACTOR_DATA_ROOT ?? '.data')
 
-const store = new FileWorldStore(
-  WORLD_PATH,
-  createEmptyWorld('Contractor Hub vNext World', 'world-vnext'),
-)
-const supplyStore = new FileSupplyObservationStore(SUPPLY_PATH)
-const proposalStore = new FileProposalStore(PROPOSAL_PATH)
 const capabilities = new CapabilityRegistry()
 capabilities.register(constructionCapability)
 capabilities.register(waterCapability)
 capabilities.register(energyCapability)
 
+const projects = new ProjectRuntimeManager(
+  DATA_ROOT,
+  capabilities.buildRequirementProviders(),
+)
+
 const app = createMcpExpressApp({ host: '127.0.0.1' })
 
-function buildGraph() {
-  return deriveBuildGraph(
-    store.snapshot(),
-    new Date().toISOString(),
-    capabilities.buildRequirementProviders(),
-  )
+function projectIdFrom(params: Record<string, unknown>): string {
+  return String(params.projectId ?? '')
 }
 
-function supplyGraph() {
-  return deriveSupplyGraph(buildGraph(), supplyStore.list())
-}
-
-function proposalView(proposal: WorldTransaction) {
-  try {
-    const preview = previewTransaction(store.snapshot(), proposal)
-    return {
-      status: 'ready' as const,
-      proposal,
-      diff: preview.diff,
-    }
-  } catch (error) {
-    return {
-      status: 'stale-or-invalid' as const,
-      proposal,
-      error: error instanceof Error ? error.message : 'Proposal is no longer valid',
-    }
-  }
-}
-
-function proposalViews() {
-  return proposalStore.list().map(proposalView)
+function errorResponse(
+  res: { status: (code: number) => { json: (value: unknown) => unknown } },
+  error: unknown,
+  fallback: string,
+) {
+  const message = error instanceof Error ? error.message : fallback
+  const code =
+    error instanceof Error && error.name === 'WorldConflictError'
+      ? 409
+      : message.startsWith('Unknown project:')
+        ? 404
+        : 400
+  return res.status(code).json({ error: message })
 }
 
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
-    revision: store.snapshot().revision,
     persistence: 'file',
-    worldPath: WORLD_PATH,
-    supplyPath: SUPPLY_PATH,
-    proposalPath: PROPOSAL_PATH,
-    supplyObservationCount: supplyStore.list().length,
-    pendingProposalCount: proposalStore.list().length,
+    dataRoot: DATA_ROOT,
+    projectCount: projects.list().length,
   })
 })
 
-app.get('/api/world', (_req, res) => {
-  res.json({ world: store.snapshot() })
+app.get('/api/projects', (_req, res) => {
+  res.json({ projects: projects.list() })
 })
 
-app.get('/api/history', (_req, res) => {
-  res.json({ history: store.history() })
-})
-
-app.get('/api/build-graph', (_req, res) => {
-  res.json({ buildGraph: buildGraph() })
-})
-
-app.get('/api/supply-observations', (_req, res) => {
-  res.json({ observations: supplyStore.list() })
-})
-
-app.get('/api/supply-graph', (_req, res) => {
-  res.json({ supplyGraph: supplyGraph() })
-})
-
-app.get('/api/proposals', (_req, res) => {
-  res.json({ proposals: proposalViews() })
+app.post('/api/projects', (req, res) => {
+  try {
+    const { name } = z.object({ name: z.string().min(1) }).parse(req.body)
+    const project = projects.create(name)
+    res.json({
+      project,
+      world: projects.runtime(project.id).store.snapshot(),
+    })
+  } catch (error) {
+    errorResponse(res, error, 'Project creation failed')
+  }
 })
 
 app.get('/api/capabilities', (_req, res) => {
   res.json({ capabilities: capabilities.list() })
 })
 
-const propertyValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()])
-const propertyKnowledgeInputSchema = z.object({
-  basis: z.enum([
-    'chosen',
-    'proposed',
-    'imported',
-    'manufacturer',
-    'calculated',
-    'inferred',
-    'defaulted',
-    'rule-required',
-    'provider',
-    'unknown',
-  ]).optional(),
-  confidence: z.enum(['low', 'medium', 'high', 'verified']).optional(),
-  note: z.string().optional(),
-}).optional()
-
-const actorSchema = z.object({
-  kind: z.enum(['human', 'agent', 'automation', 'system']),
-  id: z.string().min(1),
-  label: z.string().optional(),
-})
-
-const vec3Schema = z.object({
-  x: z.number(),
-  y: z.number(),
-  z: z.number(),
-})
-
-const primitivePropertiesSchema = z.record(z.string(), propertyValueSchema)
-const portInputSchema = z.object({
-  id: z.string().min(1).optional(),
-  kind: z.string().min(1),
-  name: z.string().min(1),
-  properties: primitivePropertiesSchema.optional(),
-})
-
-const supplySourceKindSchema = z.enum([
-  'inventory',
-  'reuse',
-  'local-retail',
-  'local-trade',
-  'local-fabricator',
-  'regional',
-  'online',
-  'self-fabrication',
-])
-
-const supplyObservationInputSchema = z.object({
-  id: z.string().min(1).optional(),
-  sourceId: z.string().min(1),
-  sourceName: z.string().min(1),
-  sourceKind: supplySourceKindSchema,
-  requirementId: z.string().min(1).optional(),
-  specification: z.string().optional(),
-  name: z.string().optional(),
-  quantityAvailable: z.number().nonnegative(),
-  unit: z.string().min(1),
-  unitPrice: z.number().nonnegative().optional(),
-  distanceMiles: z.number().nonnegative().optional(),
-  leadTimeDays: z.number().nonnegative().optional(),
-  fabricationMethod: z.string().optional(),
-  notes: z.string().optional(),
-  observedAt: z.string().optional(),
-})
-
-const proposalChangeSchema = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('createBox'),
-    entityKind: z.string().min(1),
-    name: z.string().min(1),
-    parentId: z.string().min(1).optional(),
-    position: vec3Schema,
-    size: vec3Schema,
-    properties: primitivePropertiesSchema.optional(),
-  }),
-  z.object({
-    kind: z.literal('createPolyline'),
-    entityKind: z.string().min(1),
-    name: z.string().min(1),
-    parentId: z.string().min(1).optional(),
-    points: z.array(vec3Schema).min(2),
-    properties: primitivePropertiesSchema.optional(),
-  }),
-  z.object({
-    kind: z.literal('createPolygon'),
-    entityKind: z.string().min(1),
-    name: z.string().min(1),
-    parentId: z.string().min(1).optional(),
-    points: z.array(vec3Schema).min(3),
-    properties: primitivePropertiesSchema.optional(),
-  }),
-  z.object({
-    kind: z.literal('moveEntity'),
-    entityId: z.string().min(1),
-    position: vec3Schema,
-  }),
-  z.object({
-    kind: z.literal('translateEntity'),
-    entityId: z.string().min(1),
-    delta: vec3Schema,
-  }),
-  z.object({
-    kind: z.literal('setGeometryPoint'),
-    entityId: z.string().min(1),
-    index: z.number().int().nonnegative(),
-    point: vec3Schema,
-  }),
-  z.object({
-    kind: z.literal('insertGeometryPoint'),
-    entityId: z.string().min(1),
-    index: z.number().int().nonnegative(),
-    point: vec3Schema,
-  }),
-  z.object({
-    kind: z.literal('removeGeometryPoint'),
-    entityId: z.string().min(1),
-    index: z.number().int().nonnegative(),
-  }),
-  z.object({
-    kind: z.literal('renameEntity'),
-    entityId: z.string().min(1),
-    name: z.string().min(1),
-  }),
-  z.object({
-    kind: z.literal('setProperty'),
-    entityId: z.string().min(1),
-    key: z.string().min(1),
-    value: propertyValueSchema,
-    knowledge: propertyKnowledgeInputSchema,
-  }),
-  z.object({
-    kind: z.literal('removeProperty'),
-    entityId: z.string().min(1),
-    key: z.string().min(1),
-  }),
-  z.object({
-    kind: z.literal('addPort'),
-    entityId: z.string().min(1),
-    port: portInputSchema,
-  }),
-  z.object({
-    kind: z.literal('connectPorts'),
-    relationId: z.string().min(1).optional(),
-    relationKind: z.string().min(1).optional(),
-    fromEntityId: z.string().min(1),
-    fromPortId: z.string().min(1),
-    toEntityId: z.string().min(1),
-    toPortId: z.string().min(1),
-    properties: primitivePropertiesSchema.optional(),
-  }),
-  z.object({
-    kind: z.literal('removeEntity'),
-    entityId: z.string().min(1),
-  }),
-])
-
-const proposalInputSchema = z.object({
-  baseRevision: z.number().int().nonnegative(),
-  actor: actorSchema.optional(),
-  note: z.string().optional(),
-  changes: z.array(proposalChangeSchema).min(1),
-})
-
-const conceptShedInputSchema = z.object({
-  baseRevision: z.number().int().nonnegative(),
-  actor: actorSchema.optional(),
-  name: z.string().min(1).optional(),
-  width: z.number().positive(),
-  depth: z.number().positive(),
-  wallHeight: z.number().positive(),
-  origin: vec3Schema.optional(),
-})
-
-const rainwaterSystemInputSchema = z.object({
-  baseRevision: z.number().int().nonnegative(),
-  actor: actorSchema.optional(),
-  name: z.string().min(1).optional(),
-  capacityGallons: z.number().positive(),
-  pipeRunFeet: z.number().positive(),
-  targetFlowGpm: z.number().positive().optional(),
-  origin: vec3Schema.optional(),
-})
-
-const solarMicrogridInputSchema = z.object({
-  baseRevision: z.number().int().nonnegative(),
-  actor: actorSchema.optional(),
-  name: z.string().min(1).optional(),
-  panelCount: z.number().int().positive(),
-  panelWatts: z.number().positive(),
-  batteryKwh: z.number().positive(),
-  inverterKw: z.number().positive(),
-  origin: vec3Schema.optional(),
-  loadEntityId: z.string().min(1).optional(),
-  loadPortId: z.string().min(1).optional(),
-})
-
-function normalizeSupplyObservation(
-  input: z.infer<typeof supplyObservationInputSchema>,
-): SupplyObservation {
-  const requirement = input.requirementId
-    ? buildGraph().requirements.find((candidate) => candidate.id === input.requirementId)
-    : undefined
-
-  if (input.requirementId && !requirement) {
-    throw new Error(`Unknown Build requirement: ${input.requirementId}`)
-  }
-
-  return {
-    ...input,
-    id: input.id ?? createId('supply-observation'),
-    observedAt: input.observedAt ?? new Date().toISOString(),
-    requirementSignature: requirement ? requirementSignature(requirement) : undefined,
-    specification: input.specification ?? requirement?.specification,
-    name: input.name ?? requirement?.name,
-  }
-}
-
-function transactionActor(input?: ActorRef): ActorRef {
-  return input ?? { kind: 'agent', id: 'mcp:agent' }
-}
-
-function proposalTransaction(
-  input: z.infer<typeof proposalInputSchema>,
-): WorldTransaction {
-  const actor = transactionActor(input.actor)
-  const at = new Date().toISOString()
-  const mutations: WorldMutation[] = input.changes.map((change) => {
-    switch (change.kind) {
-      case 'createBox':
-        return {
-          kind: 'createEntity',
-          entity: createBoxEntity({
-            kind: change.entityKind,
-            name: change.name,
-            parentId: change.parentId,
-            position: change.position,
-            size: change.size,
-            properties: change.properties,
-            actor,
-            at,
-          }),
-        }
-      case 'createPolyline':
-        return {
-          kind: 'createEntity',
-          entity: createPolylineEntity({
-            kind: change.entityKind,
-            name: change.name,
-            parentId: change.parentId,
-            points: change.points,
-            properties: change.properties,
-            actor,
-            at,
-          }),
-        }
-      case 'createPolygon':
-        return {
-          kind: 'createEntity',
-          entity: createPolygonEntity({
-            kind: change.entityKind,
-            name: change.name,
-            parentId: change.parentId,
-            points: change.points,
-            properties: change.properties,
-            actor,
-            at,
-          }),
-        }
-      case 'moveEntity':
-        return {
-          kind: 'moveEntity',
-          entityId: change.entityId,
-          position: change.position,
-        }
-      case 'translateEntity':
-        return {
-          kind: 'translateEntity',
-          entityId: change.entityId,
-          delta: change.delta,
-        }
-      case 'setGeometryPoint':
-        return {
-          kind: 'setGeometryPoint',
-          entityId: change.entityId,
-          index: change.index,
-          point: change.point,
-        }
-      case 'insertGeometryPoint':
-        return {
-          kind: 'insertGeometryPoint',
-          entityId: change.entityId,
-          index: change.index,
-          point: change.point,
-        }
-      case 'removeGeometryPoint':
-        return {
-          kind: 'removeGeometryPoint',
-          entityId: change.entityId,
-          index: change.index,
-        }
-      case 'renameEntity':
-        return {
-          kind: 'renameEntity',
-          entityId: change.entityId,
-          name: change.name,
-        }
-      case 'setProperty':
-        return {
-          kind: 'setProperty',
-          entityId: change.entityId,
-          key: change.key,
-          value: change.value,
-          knowledge: change.knowledge,
-        }
-      case 'removeProperty':
-        return {
-          kind: 'removeProperty',
-          entityId: change.entityId,
-          key: change.key,
-        }
-      case 'addPort':
-        return {
-          kind: 'addPort',
-          entityId: change.entityId,
-          port: {
-            ...change.port,
-            id: change.port.id ?? createId('port'),
-          },
-        }
-      case 'connectPorts':
-        return {
-          kind: 'connectPorts',
-          relationId: change.relationId ?? createId('connection'),
-          relationKind: change.relationKind,
-          fromEntityId: change.fromEntityId,
-          fromPortId: change.fromPortId,
-          toEntityId: change.toEntityId,
-          toPortId: change.toPortId,
-          properties: change.properties,
-        }
-      case 'removeEntity':
-        return {
-          kind: 'removeEntity',
-          entityId: change.entityId,
-        }
-    }
-  })
-
-  return createTransaction({
-    id: createId('proposal'),
-    baseRevision: input.baseRevision,
-    actor,
-    mutations,
-    note: input.note,
-    at,
-  })
-}
-
-app.post('/api/construction/concept-shed', (req, res) => {
+app.get('/api/projects/:projectId/world', (req, res) => {
   try {
-    const input = conceptShedInputSchema.parse(req.body)
-    const actor = input.actor ?? { kind: 'human' as const, id: 'studio:local-human', label: 'Studio user' }
-    const transaction = createConceptShedTransaction(input.baseRevision, input, actor)
-    const result = store.apply(transaction)
+    const projectId = projectIdFrom(req.params)
     res.json({
-      result,
-      buildGraph: buildGraph(),
-      supplyGraph: supplyGraph(),
+      project: projects.registry.require(projectId),
+      world: projects.runtime(projectId).store.snapshot(),
     })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Concept shed creation failed'
-    const conflict = error instanceof Error && error.name === 'WorldConflictError'
-    res.status(conflict ? 409 : 400).json({ error: message })
+    errorResponse(res, error, 'World load failed')
   }
 })
 
-app.post('/api/water/rainwater-system', (req, res) => {
+app.get('/api/projects/:projectId/history', (req, res) => {
   try {
-    const input = rainwaterSystemInputSchema.parse(req.body)
-    const actor = input.actor ?? { kind: 'human' as const, id: 'studio:local-human', label: 'Studio user' }
-    const transaction = createRainwaterSystemTransaction(input.baseRevision, input, actor)
-    const result = store.apply(transaction)
+    const projectId = projectIdFrom(req.params)
+    res.json({ history: projects.runtime(projectId).store.history() })
+  } catch (error) {
+    errorResponse(res, error, 'History load failed')
+  }
+})
+
+app.get('/api/projects/:projectId/build-graph', (req, res) => {
+  try {
+    const projectId = projectIdFrom(req.params)
+    res.json({ buildGraph: projects.buildGraph(projectId) })
+  } catch (error) {
+    errorResponse(res, error, 'Build Graph failed')
+  }
+})
+
+app.get('/api/projects/:projectId/supply-observations', (req, res) => {
+  try {
+    const projectId = projectIdFrom(req.params)
     res.json({
-      result,
-      buildGraph: buildGraph(),
-      supplyGraph: supplyGraph(),
+      observations: projects.runtime(projectId).supplyStore.list(),
     })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Rainwater system creation failed'
-    const conflict = error instanceof Error && error.name === 'WorldConflictError'
-    res.status(conflict ? 409 : 400).json({ error: message })
+    errorResponse(res, error, 'Supply observations failed')
   }
 })
 
-app.post('/api/energy/solar-microgrid', (req, res) => {
+app.get('/api/projects/:projectId/supply-graph', (req, res) => {
   try {
-    const input = solarMicrogridInputSchema.parse(req.body)
-    const actor = input.actor ?? { kind: 'human' as const, id: 'studio:local-human', label: 'Studio user' }
-    const transaction = createSolarMicrogridTransaction(input.baseRevision, input, actor)
-    const result = store.apply(transaction)
-    res.json({
-      result,
-      buildGraph: buildGraph(),
-      supplyGraph: supplyGraph(),
-    })
+    const projectId = projectIdFrom(req.params)
+    res.json({ supplyGraph: projects.supplyGraph(projectId) })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Solar microgrid creation failed'
-    const conflict = error instanceof Error && error.name === 'WorldConflictError'
-    res.status(conflict ? 409 : 400).json({ error: message })
+    errorResponse(res, error, 'Supply Graph failed')
   }
 })
 
-app.post('/api/supply-observations', (req, res) => {
+app.get('/api/projects/:projectId/proposals', (req, res) => {
   try {
-    const parsed = supplyObservationInputSchema.parse(req.body)
-    const observation = supplyStore.record(normalizeSupplyObservation(parsed))
+    const projectId = projectIdFrom(req.params)
+    res.json({ proposals: proposalViews(projects, projectId) })
+  } catch (error) {
+    errorResponse(res, error, 'Proposal load failed')
+  }
+})
+
+app.post('/api/projects/:projectId/supply-observations', (req, res) => {
+  try {
+    const projectId = projectIdFrom(req.params)
+    const input = supplyObservationInputSchema.parse(req.body)
+    const observation = projects.recordSupply(
+      projectId,
+      normalizeSupplyObservation(projects, projectId, input),
+    )
     res.json({
       observation,
-      supplyGraph: supplyGraph(),
+      supplyGraph: projects.supplyGraph(projectId),
     })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Supply observation failed'
-    res.status(400).json({ error: message })
+    errorResponse(res, error, 'Supply observation failed')
   }
 })
 
-app.post('/api/proposals', (req, res) => {
+app.post('/api/projects/:projectId/proposals', (req, res) => {
   try {
+    const projectId = projectIdFrom(req.params)
     const input = proposalInputSchema.parse(req.body)
-    const proposal = proposalTransaction(input)
-    const preview = previewTransaction(store.snapshot(), proposal)
-    proposalStore.save(proposal)
+    const proposal = (await import('./contracts')).proposalTransaction(input)
+    const preview = previewTransaction(
+      projects.runtime(projectId).store.snapshot(),
+      proposal,
+    )
+    projects.runtime(projectId).proposalStore.save(proposal)
     res.json({
       proposal,
       diff: preview.diff,
     })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Proposal failed'
-    const conflict = error instanceof Error && error.name === 'WorldConflictError'
-    res.status(conflict ? 409 : 400).json({ error: message })
+    errorResponse(res, error, 'Proposal failed')
   }
 })
 
-app.post('/api/proposals/:id/apply', (req, res) => {
+app.post('/api/projects/:projectId/proposals/:id/apply', (req, res) => {
   try {
-    const proposal = proposalStore.get(req.params.id)
+    const projectId = projectIdFrom(req.params)
+    const runtime = projects.runtime(projectId)
+    const proposal = runtime.proposalStore.get(String(req.params.id))
     if (!proposal) return res.status(404).json({ error: 'Unknown proposal' })
-    const result = store.apply(proposal)
-    proposalStore.remove(proposal.id)
+
+    const result = projects.apply(projectId, proposal)
+    runtime.proposalStore.remove(proposal.id)
     return res.json({
       result,
-      buildGraph: buildGraph(),
-      supplyGraph: supplyGraph(),
+      buildGraph: projects.buildGraph(projectId),
+      supplyGraph: projects.supplyGraph(projectId),
     })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Proposal apply failed'
-    const conflict = error instanceof Error && error.name === 'WorldConflictError'
-    return res.status(conflict ? 409 : 400).json({ error: message })
+    return errorResponse(res, error, 'Proposal apply failed')
   }
 })
 
-app.delete('/api/proposals/:id', (req, res) => {
-  const removed = proposalStore.remove(req.params.id)
-  res.status(removed ? 200 : 404).json({ removed })
+app.delete('/api/projects/:projectId/proposals/:id', (req, res) => {
+  try {
+    const projectId = projectIdFrom(req.params)
+    const removed = projects.runtime(projectId).proposalStore.remove(
+      String(req.params.id),
+    )
+    res.status(removed ? 200 : 404).json({ removed })
+  } catch (error) {
+    errorResponse(res, error, 'Proposal discard failed')
+  }
 })
 
-app.post('/api/transactions', (req, res) => {
+app.post('/api/projects/:projectId/transactions', (req, res) => {
   try {
-    const transaction = req.body as WorldTransaction
-    const result = store.apply(transaction)
+    const projectId = projectIdFrom(req.params)
+    const result = projects.apply(projectId, req.body as WorldTransaction)
     res.json(result)
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Transaction failed'
-    const conflict = error instanceof Error && error.name === 'WorldConflictError'
-    res.status(conflict ? 409 : 400).json({ error: message })
+    errorResponse(res, error, 'Transaction failed')
   }
 })
 
-function worldText() {
-  return JSON.stringify(store.snapshot(), null, 2)
-}
-
-const mcpHandler = createMcpHandler(() => {
-  const server = new McpServer({
-    name: 'contractor-hub-vnext',
-    version: '0.1.0',
-  })
-
-  server.registerTool(
-    'capabilities_list',
-    {
-      description: 'List registered Contractor Hub capability packs and their current contribution surface.',
-      inputSchema: z.object({}),
-    },
-    async () => ({
-      content: [{ type: 'text', text: JSON.stringify(capabilities.list(), null, 2) }],
-    }),
-  )
-
-  server.registerTool(
-    'construction_create_concept_shed',
-    {
-      description: 'Create a conceptual shed shell through the Construction capability and canonical World transaction path.',
-      inputSchema: conceptShedInputSchema,
-    },
-    async (input) => {
-      const actor = transactionActor(input.actor)
-      const transaction = createConceptShedTransaction(input.baseRevision, input, actor)
-      const result = store.apply(transaction)
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            result,
-            buildGraph: buildGraph(),
-          }, null, 2),
-        }],
-      }
-    },
-  )
-
-  server.registerTool(
-    'construction_propose_concept_shed',
-    {
-      description: 'Create a reviewable conceptual shed proposal without mutating accepted World state.',
-      inputSchema: conceptShedInputSchema,
-    },
-    async (input) => {
-      const actor = transactionActor(input.actor)
-      const proposal = createConceptShedTransaction(input.baseRevision, input, actor)
-      const preview = previewTransaction(store.snapshot(), proposal)
-      proposalStore.save(proposal)
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            proposal,
-            diff: preview.diff,
-            buildGraphPreview: deriveBuildGraph(
-              preview.previewWorld,
-              new Date().toISOString(),
-              capabilities.buildRequirementProviders(),
-            ),
-          }, null, 2),
-        }],
-      }
-    },
-  )
-
-
-  server.registerTool(
-    'water_create_rainwater_system',
-    {
-      description: 'Create a conceptual connected rainwater storage, pipe, and pump system through the Water capability.',
-      inputSchema: rainwaterSystemInputSchema,
-    },
-    async (input) => {
-      const actor = transactionActor(input.actor)
-      const transaction = createRainwaterSystemTransaction(input.baseRevision, input, actor)
-      const result = store.apply(transaction)
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            result,
-            buildGraph: buildGraph(),
-          }, null, 2),
-        }],
-      }
-    },
-  )
-
-  server.registerTool(
-    'water_propose_rainwater_system',
-    {
-      description: 'Create a reviewable rainwater-system proposal with explicit ports and fluid connections.',
-      inputSchema: rainwaterSystemInputSchema,
-    },
-    async (input) => {
-      const actor = transactionActor(input.actor)
-      const proposal = createRainwaterSystemTransaction(input.baseRevision, input, actor)
-      const preview = previewTransaction(store.snapshot(), proposal)
-      proposalStore.save(proposal)
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            proposal,
-            diff: preview.diff,
-            buildGraphPreview: deriveBuildGraph(
-              preview.previewWorld,
-              new Date().toISOString(),
-              capabilities.buildRequirementProviders(),
-            ),
-          }, null, 2),
-        }],
-      }
-    },
-  )
-
-
-  server.registerTool(
-    'energy_create_solar_microgrid',
-    {
-      description: 'Create a conceptual solar, battery, inverter, and distribution system, optionally supplying an existing power port.',
-      inputSchema: solarMicrogridInputSchema,
-    },
-    async (input) => {
-      const actor = transactionActor(input.actor)
-      const transaction = createSolarMicrogridTransaction(input.baseRevision, input, actor)
-      const result = store.apply(transaction)
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            result,
-            buildGraph: buildGraph(),
-          }, null, 2),
-        }],
-      }
-    },
-  )
-
-  server.registerTool(
-    'energy_propose_solar_microgrid',
-    {
-      description: 'Create a reviewable solar microgrid proposal, including an optional cross-capability load connection.',
-      inputSchema: solarMicrogridInputSchema,
-    },
-    async (input) => {
-      const actor = transactionActor(input.actor)
-      const proposal = createSolarMicrogridTransaction(input.baseRevision, input, actor)
-      const preview = previewTransaction(store.snapshot(), proposal)
-      proposalStore.save(proposal)
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            proposal,
-            diff: preview.diff,
-            buildGraphPreview: deriveBuildGraph(
-              preview.previewWorld,
-              new Date().toISOString(),
-              capabilities.buildRequirementProviders(),
-            ),
-          }, null, 2),
-        }],
-      }
-    },
-  )
-
-  server.registerTool(
-    'world_snapshot',
-    {
-      description: 'Read the current Contractor Hub world and its revision.',
-      inputSchema: z.object({}),
-    },
-    async () => ({
-      content: [{ type: 'text', text: worldText() }],
-    }),
-  )
-
-  server.registerTool(
-    'world_history',
-    {
-      description: 'Read accepted transaction history for the current local world.',
-      inputSchema: z.object({}),
-    },
-    async () => ({
-      content: [{ type: 'text', text: JSON.stringify(store.history(), null, 2) }],
-    }),
-  )
-
-  server.registerTool(
-    'world_list_proposals',
-    {
-      description: 'List pending World proposals with current ready/stale status and structural diffs.',
-      inputSchema: z.object({}),
-    },
-    async () => ({
-      content: [{ type: 'text', text: JSON.stringify(proposalViews(), null, 2) }],
-    }),
-  )
-
-  server.registerTool(
-    'world_propose_changes',
-    {
-      description: 'Validate and persist a reviewable multi-change proposal without mutating accepted World state.',
-      inputSchema: proposalInputSchema,
-    },
-    async (input) => {
-      const proposal = proposalTransaction(input)
-      const preview = previewTransaction(store.snapshot(), proposal)
-      proposalStore.save(proposal)
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            proposal,
-            diff: preview.diff,
-          }, null, 2),
-        }],
-      }
-    },
-  )
-
-  server.registerTool(
-    'world_apply_proposal',
-    {
-      description: 'Apply one pending proposal if its base revision is still current.',
-      inputSchema: z.object({ proposalId: z.string().min(1) }),
-    },
-    async ({ proposalId }) => {
-      const proposal = proposalStore.get(proposalId)
-      if (!proposal) throw new Error(`Unknown proposal: ${proposalId}`)
-      const result = store.apply(proposal)
-      proposalStore.remove(proposalId)
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-      }
-    },
-  )
-
-  server.registerTool(
-    'world_discard_proposal',
-    {
-      description: 'Discard a pending proposal without changing accepted World state.',
-      inputSchema: z.object({ proposalId: z.string().min(1) }),
-    },
-    async ({ proposalId }) => ({
-      content: [{
-        type: 'text',
-        text: JSON.stringify({ removed: proposalStore.remove(proposalId) }),
-      }],
-    }),
-  )
-
-  server.registerTool(
-    'build_graph',
-    {
-      description: 'Derive the current Build Graph of required parts and materials from the accepted World.',
-      inputSchema: z.object({}),
-    },
-    async () => ({
-      content: [{
-        type: 'text',
-        text: JSON.stringify(buildGraph(), null, 2),
-      }],
-    }),
-  )
-
-  server.registerTool(
-    'supply_graph',
-    {
-      description: 'Derive local-first sourcing resolutions from the Build Graph and current supply observations.',
-      inputSchema: z.object({}),
-    },
-    async () => ({
-      content: [{
-        type: 'text',
-        text: JSON.stringify(supplyGraph(), null, 2),
-      }],
-    }),
-  )
-
-  server.registerTool(
-    'supply_observations',
-    {
-      description: 'Read current timestamped inventory, local supplier, fabrication, regional, and online observations.',
-      inputSchema: z.object({}),
-    },
-    async () => ({
-      content: [{
-        type: 'text',
-        text: JSON.stringify(supplyStore.list(), null, 2),
-      }],
-    }),
-  )
-
-  server.registerTool(
-    'supply_record_observation',
-    {
-      description: 'Record a timestamped sourcing observation without mutating canonical World design truth.',
-      inputSchema: supplyObservationInputSchema,
-    },
-    async (input) => {
-      const observation = supplyStore.record(normalizeSupplyObservation(input))
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            observation,
-            supplyGraph: supplyGraph(),
-          }, null, 2),
-        }],
-      }
-    },
-  )
-
-  server.registerTool(
-    'world_create_box',
-    {
-      description: 'Create a physical entity with simple box geometry through the canonical transaction path.',
-      inputSchema: z.object({
-        baseRevision: z.number().int().nonnegative(),
-        actor: actorSchema.optional(),
-        kind: z.string().min(1),
-        name: z.string().min(1),
-        parentId: z.string().optional(),
-        position: vec3Schema,
-        size: vec3Schema,
-        properties: z.record(z.string(), propertyValueSchema).optional(),
-      }),
-    },
-    async (input) => {
-      const actor = transactionActor(input.actor)
-      const entity = createBoxEntity({
-        kind: input.kind,
-        name: input.name,
-        parentId: input.parentId,
-        position: input.position,
-        size: input.size,
-        properties: input.properties,
-        actor,
-      })
-      const result = store.apply(createTransaction({
-        baseRevision: input.baseRevision,
-        actor,
-        mutations: [{ kind: 'createEntity', entity }],
-        note: 'MCP create box',
-      }))
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({ entityId: entity.id, revision: result.revision, world: result.world }, null, 2),
-        }],
-      }
-    },
-  )
-
-
-  server.registerTool(
-    'world_create_polyline',
-    {
-      description: 'Create a path-like physical entity through the canonical World transaction path.',
-      inputSchema: z.object({
-        baseRevision: z.number().int().nonnegative(),
-        actor: actorSchema.optional(),
-        kind: z.string().min(1),
-        name: z.string().min(1),
-        parentId: z.string().optional(),
-        points: z.array(vec3Schema).min(2),
-        properties: primitivePropertiesSchema.optional(),
-      }),
-    },
-    async (input) => {
-      const actor = transactionActor(input.actor)
-      const entity = createPolylineEntity({
-        kind: input.kind,
-        name: input.name,
-        parentId: input.parentId,
-        points: input.points,
-        properties: input.properties,
-        actor,
-      })
-      const result = store.apply(createTransaction({
-        baseRevision: input.baseRevision,
-        actor,
-        mutations: [{ kind: 'createEntity', entity }],
-        note: 'MCP create polyline',
-      }))
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({ entityId: entity.id, revision: result.revision, world: result.world }, null, 2),
-        }],
-      }
-    },
-  )
-
-  server.registerTool(
-    'world_create_polygon',
-    {
-      description: 'Create an area-like physical entity through the canonical World transaction path.',
-      inputSchema: z.object({
-        baseRevision: z.number().int().nonnegative(),
-        actor: actorSchema.optional(),
-        kind: z.string().min(1),
-        name: z.string().min(1),
-        parentId: z.string().optional(),
-        points: z.array(vec3Schema).min(3),
-        properties: primitivePropertiesSchema.optional(),
-      }),
-    },
-    async (input) => {
-      const actor = transactionActor(input.actor)
-      const entity = createPolygonEntity({
-        kind: input.kind,
-        name: input.name,
-        parentId: input.parentId,
-        points: input.points,
-        properties: input.properties,
-        actor,
-      })
-      const result = store.apply(createTransaction({
-        baseRevision: input.baseRevision,
-        actor,
-        mutations: [{ kind: 'createEntity', entity }],
-        note: 'MCP create polygon',
-      }))
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({ entityId: entity.id, revision: result.revision, world: result.world }, null, 2),
-        }],
-      }
-    },
-  )
-
-  server.registerTool(
-    'world_move_entity',
-    {
-      description: 'Move an existing entity through the canonical transaction path.',
-      inputSchema: z.object({
-        baseRevision: z.number().int().nonnegative(),
-        actor: actorSchema.optional(),
-        entityId: z.string().min(1),
-        position: vec3Schema,
-      }),
-    },
-    async (input) => {
-      const actor = transactionActor(input.actor)
-      const result = store.apply(createTransaction({
-        baseRevision: input.baseRevision,
-        actor,
-        mutations: [{
-          kind: 'moveEntity',
-          entityId: input.entityId,
-          position: input.position,
-        }],
-        note: 'MCP move entity',
-      }))
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-      }
-    },
-  )
-
-
-  server.registerTool(
-    'world_translate_entity',
-    {
-      description: 'Translate box, path, or polygon geometry by a delta through the canonical transaction path.',
-      inputSchema: z.object({
-        baseRevision: z.number().int().nonnegative(),
-        actor: actorSchema.optional(),
-        entityId: z.string().min(1),
-        delta: vec3Schema,
-      }),
-    },
-    async (input) => {
-      const actor = transactionActor(input.actor)
-      const result = store.apply(createTransaction({
-        baseRevision: input.baseRevision,
-        actor,
-        mutations: [{
-          kind: 'translateEntity',
-          entityId: input.entityId,
-          delta: input.delta,
-        }],
-        note: 'MCP translate entity',
-      }))
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-      }
-    },
-  )
-
-
-  server.registerTool(
-    'world_set_geometry_point',
-    {
-      description: 'Move one path/polygon vertex to an exact point through the canonical transaction path.',
-      inputSchema: z.object({
-        baseRevision: z.number().int().nonnegative(),
-        actor: actorSchema.optional(),
-        entityId: z.string().min(1),
-        index: z.number().int().nonnegative(),
-        point: vec3Schema,
-      }),
-    },
-    async (input) => {
-      const actor = transactionActor(input.actor)
-      const result = store.apply(createTransaction({
-        baseRevision: input.baseRevision,
-        actor,
-        mutations: [{
-          kind: 'setGeometryPoint',
-          entityId: input.entityId,
-          index: input.index,
-          point: input.point,
-        }],
-        note: 'MCP edit geometry point',
-      }))
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-      }
-    },
-  )
-
-  server.registerTool(
-    'world_insert_geometry_point',
-    {
-      description: 'Insert a vertex into path/polygon geometry through the canonical transaction path.',
-      inputSchema: z.object({
-        baseRevision: z.number().int().nonnegative(),
-        actor: actorSchema.optional(),
-        entityId: z.string().min(1),
-        index: z.number().int().nonnegative(),
-        point: vec3Schema,
-      }),
-    },
-    async (input) => {
-      const actor = transactionActor(input.actor)
-      const result = store.apply(createTransaction({
-        baseRevision: input.baseRevision,
-        actor,
-        mutations: [{
-          kind: 'insertGeometryPoint',
-          entityId: input.entityId,
-          index: input.index,
-          point: input.point,
-        }],
-        note: 'MCP insert geometry point',
-      }))
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-      }
-    },
-  )
-
-  server.registerTool(
-    'world_remove_geometry_point',
-    {
-      description: 'Remove a path/polygon vertex when the remaining geometry stays valid.',
-      inputSchema: z.object({
-        baseRevision: z.number().int().nonnegative(),
-        actor: actorSchema.optional(),
-        entityId: z.string().min(1),
-        index: z.number().int().nonnegative(),
-      }),
-    },
-    async (input) => {
-      const actor = transactionActor(input.actor)
-      const result = store.apply(createTransaction({
-        baseRevision: input.baseRevision,
-        actor,
-        mutations: [{
-          kind: 'removeGeometryPoint',
-          entityId: input.entityId,
-          index: input.index,
-        }],
-        note: 'MCP remove geometry point',
-      }))
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-      }
-    },
-  )
-
-
-  server.registerTool(
-    'world_add_port',
-    {
-      description: 'Add a typed connection interface to an existing World entity.',
-      inputSchema: z.object({
-        baseRevision: z.number().int().nonnegative(),
-        actor: actorSchema.optional(),
-        entityId: z.string().min(1),
-        port: portInputSchema,
-      }),
-    },
-    async (input) => {
-      const actor = transactionActor(input.actor)
-      const port = {
-        ...input.port,
-        id: input.port.id ?? createId('port'),
-      }
-      const result = store.apply(createTransaction({
-        baseRevision: input.baseRevision,
-        actor,
-        mutations: [{
-          kind: 'addPort',
-          entityId: input.entityId,
-          port,
-        }],
-        note: 'MCP add port',
-      }))
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({ port, result }, null, 2),
-        }],
-      }
-    },
-  )
-
-  server.registerTool(
-    'world_connect_ports',
-    {
-      description: 'Connect a compatible output/bidirectional port to an input/bidirectional port through canonical World validation.',
-      inputSchema: z.object({
-        baseRevision: z.number().int().nonnegative(),
-        actor: actorSchema.optional(),
-        relationId: z.string().min(1).optional(),
-        relationKind: z.string().min(1).optional(),
-        fromEntityId: z.string().min(1),
-        fromPortId: z.string().min(1),
-        toEntityId: z.string().min(1),
-        toPortId: z.string().min(1),
-        properties: primitivePropertiesSchema.optional(),
-      }),
-    },
-    async (input) => {
-      const actor = transactionActor(input.actor)
-      const relationId = input.relationId ?? createId('connection')
-      const result = store.apply(createTransaction({
-        baseRevision: input.baseRevision,
-        actor,
-        mutations: [{
-          kind: 'connectPorts',
-          relationId,
-          relationKind: input.relationKind,
-          fromEntityId: input.fromEntityId,
-          fromPortId: input.fromPortId,
-          toEntityId: input.toEntityId,
-          toPortId: input.toPortId,
-          properties: input.properties,
-        }],
-        note: 'MCP connect ports',
-      }))
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({ relationId, result }, null, 2),
-        }],
-      }
-    },
-  )
-
-  server.registerTool(
-    'world_set_property',
-    {
-      description: 'Set one primitive property on an existing entity and optionally record value-level knowledge metadata.',
-      inputSchema: z.object({
-        baseRevision: z.number().int().nonnegative(),
-        actor: actorSchema.optional(),
-        entityId: z.string().min(1),
-        key: z.string().min(1),
-        value: propertyValueSchema,
-        knowledge: propertyKnowledgeInputSchema,
-      }),
-    },
-    async (input) => {
-      const actor = transactionActor(input.actor)
-      const value: PropertyValue = input.value
-      const result = store.apply(createTransaction({
-        baseRevision: input.baseRevision,
-        actor,
-        mutations: [{
-          kind: 'setProperty',
-          entityId: input.entityId,
-          key: input.key,
-          value,
-          knowledge: input.knowledge,
-        }],
-        note: 'MCP set property',
-      }))
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-      }
-    },
-  )
-
-  return server
+app.post('/api/projects/:projectId/construction/concept-shed', (req, res) => {
+  try {
+    const projectId = projectIdFrom(req.params)
+    const input = conceptShedInputSchema.parse(req.body)
+    const actor = input.actor ?? {
+      kind: 'human' as const,
+      id: 'studio:local-human',
+      label: 'Studio user',
+    }
+    const transaction = createConceptShedTransaction(
+      input.baseRevision,
+      input,
+      actor,
+    )
+    const result = projects.apply(projectId, transaction)
+    res.json({
+      result,
+      buildGraph: projects.buildGraph(projectId),
+      supplyGraph: projects.supplyGraph(projectId),
+    })
+  } catch (error) {
+    errorResponse(res, error, 'Concept shed creation failed')
+  }
 })
 
-const nodeMcpHandler = toNodeHandler(mcpHandler)
-app.all('/mcp', (req, res) => void nodeMcpHandler(req, res, req.body))
+app.post('/api/projects/:projectId/water/rainwater-system', (req, res) => {
+  try {
+    const projectId = projectIdFrom(req.params)
+    const input = rainwaterSystemInputSchema.parse(req.body)
+    const actor = input.actor ?? {
+      kind: 'human' as const,
+      id: 'studio:local-human',
+      label: 'Studio user',
+    }
+    const transaction = createRainwaterSystemTransaction(
+      input.baseRevision,
+      input,
+      actor,
+    )
+    const result = projects.apply(projectId, transaction)
+    res.json({
+      result,
+      buildGraph: projects.buildGraph(projectId),
+      supplyGraph: projects.supplyGraph(projectId),
+    })
+  } catch (error) {
+    errorResponse(res, error, 'Rainwater system creation failed')
+  }
+})
+
+app.post('/api/projects/:projectId/energy/solar-microgrid', (req, res) => {
+  try {
+    const projectId = projectIdFrom(req.params)
+    const input = solarMicrogridInputSchema.parse(req.body)
+    const actor = input.actor ?? {
+      kind: 'human' as const,
+      id: 'studio:local-human',
+      label: 'Studio user',
+    }
+    const transaction = createSolarMicrogridTransaction(
+      input.baseRevision,
+      input,
+      actor,
+    )
+    const result = projects.apply(projectId, transaction)
+    res.json({
+      result,
+      buildGraph: projects.buildGraph(projectId),
+      supplyGraph: projects.supplyGraph(projectId),
+    })
+  } catch (error) {
+    errorResponse(res, error, 'Solar microgrid creation failed')
+  }
+})
+
+const nodeMcpHandler = toNodeHandler(
+  createContractorMcpHandler(projects, capabilities),
+)
+
+app.all('/mcp', (req, res) => {
+  void nodeMcpHandler(req, res, req.body)
+})
 
 app.listen(PORT, '127.0.0.1', () => {
   console.log(`Contractor Hub vNext server listening on http://127.0.0.1:${PORT}`)
-  console.log(`World persistence: ${WORLD_PATH}`)
-  console.log(`Supply observations: ${SUPPLY_PATH}`)
-  console.log(`Pending proposals: ${PROPOSAL_PATH}`)
+  console.log(`Projects: ${projects.list().length} under ${DATA_ROOT}`)
   console.log(`MCP endpoint: http://127.0.0.1:${PORT}/mcp`)
 })
