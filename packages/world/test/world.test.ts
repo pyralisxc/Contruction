@@ -50,7 +50,8 @@ test('human and agent writes share the same transaction path', () => {
 
   const world = store.snapshot()
   assert.equal(world.revision, 2)
-  assert.deepEqual(world.entities[0].geometry?.position, { x: 4, y: 2, z: 0 })
+  assert.equal(world.entities[0].geometry?.type, 'box')
+  assert.deepEqual(world.entities[0].geometry?.type === 'box' ? world.entities[0].geometry.position : null, { x: 4, y: 2, z: 0 })
 })
 
 test('stale revisions fail closed', () => {
