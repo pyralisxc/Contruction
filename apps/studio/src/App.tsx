@@ -74,6 +74,77 @@ function entityStyle(entity: WorldEntity) {
   }
 }
 
+
+function GeometryPointRow({
+  point,
+  index,
+  canRemove,
+  onCommit,
+  onInsertAfter,
+  onRemove,
+}: {
+  point: Vec3
+  index: number
+  canRemove: boolean
+  onCommit: (index: number, point: Vec3) => void
+  onInsertAfter: (index: number) => void
+  onRemove: (index: number) => void
+}) {
+  const [x, setX] = useState(String(point.x))
+  const [y, setY] = useState(String(point.y))
+
+  useEffect(() => {
+    setX(String(point.x))
+    setY(String(point.y))
+  }, [point.x, point.y])
+
+  const save = () => {
+    const nextX = Number(x)
+    const nextY = Number(y)
+    if (!Number.isFinite(nextX) || !Number.isFinite(nextY)) return
+    onCommit(index, {
+      x: snapHalfFoot(nextX),
+      y: snapHalfFoot(nextY),
+      z: point.z,
+    })
+  }
+
+  return (
+    <div className="vertex-row">
+      <span className="vertex-label">P{index + 1}</span>
+      <label>
+        <span>X</span>
+        <input
+          type="number"
+          step="0.5"
+          value={x}
+          onChange={(event) => setX(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') save()
+          }}
+        />
+      </label>
+      <label>
+        <span>Y</span>
+        <input
+          type="number"
+          step="0.5"
+          value={y}
+          onChange={(event) => setY(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') save()
+          }}
+        />
+      </label>
+      <div className="vertex-actions">
+        <button onClick={save}>Save</button>
+        <button onClick={() => onInsertAfter(index)}>+</button>
+        <button disabled={!canRemove} onClick={() => onRemove(index)}>−</button>
+      </div>
+    </div>
+  )
+}
+
 export function App() {
   const [world, setWorld] = useState<WorldDocument | null>(null)
   const [buildGraph, setBuildGraph] = useState<BuildGraph | null>(null)
@@ -472,6 +543,74 @@ export function App() {
     }], `Move ${selected.name}`)
   }, [applyMutations, selected])
 
+
+  const setSelectedGeometryPoint = useCallback(async (index: number, point: Vec3) => {
+    if (!selected?.geometry || selected.geometry.type === 'box') return
+    try {
+      await applyMutations([{
+        kind: 'setGeometryPoint',
+        entityId: selected.id,
+        index,
+        point,
+      }], `Edit ${selected.name} vertex ${index + 1}`)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Could not edit geometry point')
+    }
+  }, [applyMutations, selected])
+
+  const insertSelectedGeometryPoint = useCallback(async (index: number) => {
+    if (!selected?.geometry || selected.geometry.type === 'box') return
+    const points = selected.geometry.points
+    const current = points[index]
+    if (!current) return
+
+    let next: Vec3
+    if (index < points.length - 1) {
+      next = points[index + 1]
+    } else if (selected.geometry.type === 'polygon') {
+      next = points[0]
+    } else {
+      const previous = points[index - 1] ?? { x: current.x - 1, y: current.y, z: current.z }
+      const dx = current.x - previous.x
+      const dy = current.y - previous.y
+      next = {
+        x: current.x + (Math.abs(dx) + Math.abs(dy) < 0.0001 ? 1 : dx),
+        y: current.y + (Math.abs(dx) + Math.abs(dy) < 0.0001 ? 0 : dy),
+        z: current.z,
+      }
+    }
+
+    const point = {
+      x: snapHalfFoot((current.x + next.x) / 2),
+      y: snapHalfFoot((current.y + next.y) / 2),
+      z: (current.z + next.z) / 2,
+    }
+
+    try {
+      await applyMutations([{
+        kind: 'insertGeometryPoint',
+        entityId: selected.id,
+        index: index + 1,
+        point,
+      }], `Insert vertex into ${selected.name}`)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Could not insert geometry point')
+    }
+  }, [applyMutations, selected])
+
+  const removeSelectedGeometryPoint = useCallback(async (index: number) => {
+    if (!selected?.geometry || selected.geometry.type === 'box') return
+    try {
+      await applyMutations([{
+        kind: 'removeGeometryPoint',
+        entityId: selected.id,
+        index,
+      }], `Remove vertex from ${selected.name}`)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Could not remove geometry point')
+    }
+  }, [applyMutations, selected])
+
   if (!world) {
     return <main className="loading">{status}</main>
   }
@@ -630,7 +769,10 @@ export function App() {
                 key={entity.id}
                 className={`canvas-entity ${entity.id === selectedId ? 'selected' : ''}`}
                 style={entityStyle(entity)}
-                onClick={() => setSelectedId(entity.id)}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setSelectedId(entity.id)
+                }}
                 title={entity.kind}
               >
                 <strong>{entity.name}</strong>
@@ -735,6 +877,28 @@ export function App() {
                     <button onClick={() => moveSelected(1, 0)}>→</button>
                     <button onClick={() => moveSelected(0, 1)}>↓</button>
                   </div>
+                  {selected.geometry.type !== 'box' && (
+                    <div className="vertex-editor">
+                      <h4>Vertices</h4>
+                      {selected.geometry.points.map((point, index) => (
+                        <GeometryPointRow
+                          key={index}
+                          point={point}
+                          index={index}
+                          canRemove={
+                            selected.geometry?.type === 'polyline'
+                              ? selected.geometry.points.length > 2
+                              : selected.geometry?.type === 'polygon'
+                                ? selected.geometry.points.length > 3
+                                : false
+                          }
+                          onCommit={setSelectedGeometryPoint}
+                          onInsertAfter={insertSelectedGeometryPoint}
+                          onRemove={removeSelectedGeometryPoint}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
