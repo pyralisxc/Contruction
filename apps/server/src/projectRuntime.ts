@@ -120,18 +120,25 @@ export class ProjectRuntimeManager {
     if (!existsSync(legacyWorld)) return
 
     let projectName = 'Migrated Contractor Hub Project'
+    let projectId: string | undefined
     try {
       const parsed = JSON.parse(readFileSync(legacyWorld, 'utf8')) as {
-        world?: { name?: unknown }
+        world?: { id?: unknown; name?: unknown }
       }
       if (typeof parsed.world?.name === 'string' && parsed.world.name.trim()) {
         projectName = parsed.world.name.trim()
+      }
+      if (
+        typeof parsed.world?.id === 'string' &&
+        /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(parsed.world.id)
+      ) {
+        projectId = parsed.world.id
       }
     } catch {
       // The existing World store will surface file-format problems after migration.
     }
 
-    const record = this.registry.create(projectName)
+    const record = this.registry.create(projectName, { id: projectId })
     copyFileSync(legacyWorld, this.registry.worldPath(record.id))
 
     const legacySupply = join(this.dataRoot, 'supply-observations.json')
