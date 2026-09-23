@@ -727,3 +727,56 @@ dd {
   font-size: 12px;
   font-weight: 500;
 }
+
+
+.connection-source-banner {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 8px;
+  padding: 8px;
+  border: 1px solid #3d5c54;
+  border-radius: 7px;
+  background: #13241f;
+}
+
+.connection-source-banner span,
+.connection-source-banner small {
+  color: #7fa396;
+  font-size: 10px;
+}
+
+.connection-source-banner strong {
+  font-size: 12px;
+  color: #b7d7cd;
+}
+
+.connection-source-banner button,
+.connection-actions button {
+  justify-self: start;
+  border: 1px solid #344050;
+  background: #171c24;
+  color: inherit;
+  border-radius: 6px;
+  padding: 4px 7px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.connection-port-row {
+  align-items: center;
+}
+
+.connection-port-row > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.connection-actions {
+  flex: 0 0 auto;
+}
+
+.connection-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
