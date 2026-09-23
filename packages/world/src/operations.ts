@@ -59,20 +59,42 @@ function validateEntity(entity: WorldEntity) {
   }
 
   if (entity.geometry) {
-    if (entity.geometry.type !== 'box') {
-      throw new WorldValidationError(`Unsupported geometry type on ${entity.id}`)
-    }
-    validateVec3(`entity ${entity.id} position`, entity.geometry.position)
-    validateVec3(`entity ${entity.id} size`, entity.geometry.size)
-    if (
-      entity.geometry.size.x <= 0 ||
-      entity.geometry.size.y <= 0 ||
-      entity.geometry.size.z <= 0
-    ) {
-      throw new WorldValidationError(`Box dimensions must be positive on ${entity.id}`)
-    }
-    if (entity.geometry.rotation) {
-      validateVec3(`entity ${entity.id} rotation`, entity.geometry.rotation)
+    if (entity.geometry.type === 'box') {
+      validateVec3(`entity ${entity.id} position`, entity.geometry.position)
+      validateVec3(`entity ${entity.id} size`, entity.geometry.size)
+      if (
+        entity.geometry.size.x <= 0 ||
+        entity.geometry.size.y <= 0 ||
+        entity.geometry.size.z <= 0
+      ) {
+        throw new WorldValidationError(`Box dimensions must be positive on ${entity.id}`)
+      }
+      if (entity.geometry.rotation) {
+        validateVec3(`entity ${entity.id} rotation`, entity.geometry.rotation)
+      }
+    } else if (entity.geometry.type === 'polyline') {
+      if (entity.geometry.points.length < 2) {
+        throw new WorldValidationError(`Polyline requires at least two points on ${entity.id}`)
+      }
+      entity.geometry.points.forEach((point, index) =>
+        validateVec3(`entity ${entity.id} polyline[${index}]`, point),
+      )
+    } else if (entity.geometry.type === 'polygon') {
+      if (entity.geometry.points.length < 3) {
+        throw new WorldValidationError(`Polygon requires at least three points on ${entity.id}`)
+      }
+      entity.geometry.points.forEach((point, index) =>
+        validateVec3(`entity ${entity.id} polygon[${index}]`, point),
+      )
+      let signedArea = 0
+      for (let index = 0; index < entity.geometry.points.length; index += 1) {
+        const current = entity.geometry.points[index]
+        const next = entity.geometry.points[(index + 1) % entity.geometry.points.length]
+        signedArea += current.x * next.y - next.x * current.y
+      }
+      if (Math.abs(signedArea) < 0.000001) {
+        throw new WorldValidationError(`Polygon must have non-zero XY area on ${entity.id}`)
+      }
     }
   }
 
@@ -147,6 +169,9 @@ function applyMutation(world: WorldDocument, mutation: WorldMutation) {
     case 'moveEntity': {
       const entity = entityById(world, mutation.entityId)
       if (!entity.geometry) throw new WorldValidationError(`Entity has no geometry: ${entity.id}`)
+      if (entity.geometry.type !== 'box') {
+        throw new WorldValidationError(`Absolute move is only supported for box geometry: ${entity.id}`)
+      }
       validateVec3('position', mutation.position)
       entity.geometry.position = structuredClone(mutation.position)
       return
@@ -161,6 +186,25 @@ function applyMutation(world: WorldDocument, mutation: WorldMutation) {
         throw new WorldValidationError('Box dimensions must be positive')
       }
       entity.geometry.size = structuredClone(mutation.size)
+      return
+    }
+    case 'translateEntity': {
+      const entity = entityById(world, mutation.entityId)
+      if (!entity.geometry) throw new WorldValidationError(`Entity has no geometry: ${entity.id}`)
+      validateVec3('delta', mutation.delta)
+      if (entity.geometry.type === 'box') {
+        entity.geometry.position = {
+          x: entity.geometry.position.x + mutation.delta.x,
+          y: entity.geometry.position.y + mutation.delta.y,
+          z: entity.geometry.position.z + mutation.delta.z,
+        }
+      } else {
+        entity.geometry.points = entity.geometry.points.map((point) => ({
+          x: point.x + mutation.delta.x,
+          y: point.y + mutation.delta.y,
+          z: point.z + mutation.delta.z,
+        }))
+      }
       return
     }
     case 'setProperty': {
