@@ -780,3 +780,41 @@ dd {
   cursor: not-allowed;
   opacity: 0.4;
 }
+
+
+.project-controls {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+}
+
+.project-controls select,
+.project-controls button {
+  border: 1px solid #303b49;
+  border-radius: 7px;
+  background: #121820;
+  color: #dce4ee;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.project-controls button {
+  cursor: pointer;
+}
+
+.project-controls button:hover {
+  border-color: #526176;
+  background: #1a222d;
+}
+
+@media (max-width: 900px) {
+  .project-controls {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .project-controls select {
+    flex: 1;
+  }
+}
