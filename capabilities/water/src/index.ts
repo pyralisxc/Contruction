@@ -7,7 +7,9 @@ import {
   WorldEntity,
   WorldTransaction,
   createBoxEntity,
+  createPolylineEntity,
   createId,
+  polylineLength,
   createTransaction,
 } from '../../../packages/world/src/index'
 
@@ -72,7 +74,10 @@ const waterRequirements: BuildRequirementProvider = {
       }
 
       if (entity.kind === 'water.pipe') {
-        const length = numberProperty(entity, 'lengthFeet', 0)
+        const length =
+          entity.geometry?.type === 'polyline'
+            ? polylineLength(entity.geometry.points)
+            : numberProperty(entity, 'lengthFeet', 0)
         if (length <= 0) return []
         return [
           {
@@ -172,17 +177,19 @@ export function createRainwaterSystemTransaction(
     at,
   })
 
-  const pipe = createBoxEntity({
+  const pipeStart = { x: origin.x + 5, y: origin.y + 2.5, z: origin.z + 0.5 }
+  const pipeEnd = { x: pipeStart.x + input.pipeRunFeet, y: pipeStart.y, z: pipeStart.z }
+
+  const pipe = createPolylineEntity({
     id: pipeId,
     kind: 'water.pipe',
     name: `${name} supply run`,
     parentId: systemId,
-    position: { x: origin.x + 5.5, y: origin.y + 2, z: origin.z },
-    size: { x: Math.max(1, input.pipeRunFeet), y: 0.12, z: 0.12 },
+    points: [pipeStart, pipeEnd],
     properties: {
       capability: 'water',
       fidelity: 'concept',
-      lengthFeet: input.pipeRunFeet,
+      nominalDiameterInches: 1,
     },
     ports: [
       { id: pipeStartPort, kind: 'fluid.water.in', name: 'Pipe start' },
@@ -197,7 +204,7 @@ export function createRainwaterSystemTransaction(
     kind: 'water.pump',
     name: `${name} pump`,
     parentId: systemId,
-    position: { x: origin.x + 6 + input.pipeRunFeet, y: origin.y + 1.5, z: origin.z },
+    position: { x: pipeEnd.x + 1, y: origin.y + 1.5, z: origin.z },
     size: { x: 2, y: 1.5, z: 1.5 },
     properties: {
       capability: 'water',
