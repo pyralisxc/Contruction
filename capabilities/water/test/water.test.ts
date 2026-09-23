@@ -124,3 +124,45 @@ test('editing routed pipe geometry immediately changes derived pipe quantity', (
   assert.equal(resolution?.coveredQuantity, 10)
   assert.equal(resolution?.shortfallQuantity, 5)
 })
+
+
+test('editing semantic tank capacity updates derived equipment specification', () => {
+  const store = new InMemoryWorldStore(createEmptyWorld())
+  store.apply(createRainwaterSystemTransaction(0, {
+    capacityGallons: 500,
+    pipeRunFeet: 8,
+  }, human))
+
+  const registry = new CapabilityRegistry()
+  registry.register(waterCapability)
+
+  const tank = store.snapshot().entities.find((entity) => entity.kind === 'water.storage.tank')
+  assert.ok(tank)
+
+  store.apply({
+    id: 'resize-tank-capacity',
+    baseRevision: 1,
+    actor: human,
+    createdAt: '2026-09-23T02:00:00.000Z',
+    mutations: [{
+      kind: 'setProperty',
+      entityId: tank.id,
+      key: 'capacityGallons',
+      value: 1500,
+      knowledge: {
+        basis: 'chosen',
+        confidence: 'high',
+      },
+    }],
+  })
+
+  const graph = deriveBuildGraph(
+    store.snapshot(),
+    '2026-09-23T02:00:01.000Z',
+    registry.buildRequirementProviders(),
+  )
+  const requirement = graph.requirements.find((candidate) => candidate.name === 'Rainwater storage tank')
+
+  assert.equal(requirement?.specification, '1500 gallon nominal storage capacity')
+  assert.equal(store.snapshot().entities.find((entity) => entity.id === tank.id)?.propertyKnowledge?.capacityGallons?.basis, 'chosen')
+})
