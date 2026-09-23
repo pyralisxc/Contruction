@@ -114,6 +114,11 @@ export type WorldMutation =
       size: Vec3
     }
   | {
+      kind: 'translateEntity'
+      entityId: EntityId
+      delta: Vec3
+    }
+  | {
       kind: 'setProperty'
       entityId: EntityId
       key: string
