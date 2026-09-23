@@ -44,7 +44,7 @@ A stable identified thing in the world. Domain capabilities may attach richer me
 
 ### Geometry
 
-Spatial representation associated with an entity. The current kernel starts with boxes only. The rendering representation is not assumed to be the future authoritative CAD kernel.
+Spatial representation associated with an entity. The current kernel supports boxes, polylines, and planar XY polygons. The rendering representation is not assumed to be the future authoritative CAD kernel.
 
 ### Composition
 
@@ -90,7 +90,9 @@ Current mutation vocabulary includes:
 
 - create entity;
 - rename entity;
-- move/resize primitive geometry;
+- move/resize box geometry;
+- translate any supported geometry;
+- validate path/polygon point sets and reject degenerate areas;
 - set/remove property;
 - add/update/remove port;
 - add/remove relation;
@@ -226,12 +228,12 @@ Substitution intelligence, work-package route optimization, packaging, taxes, de
 
 ## 9. Geometry boundary
 
-vNext currently uses simple box geometry only.
+vNext geometry v0 supports boxes, polylines, and planar XY polygons. Shared geometry helpers provide bounds, anchors, polyline length, and polygon plan area. Construction floors/roofs and walls now consume polygon/path geometry, and Water routes pipe runs as polylines.
 
 The architecture leaves room for:
 
-- curves and paths;
-- profiles;
+- arcs/splines and richer curve topology;
+- editable profiles;
 - surfaces;
 - solids and booleans;
 - meshes;
@@ -270,11 +272,11 @@ Retailer inventory, prices, standards, code text, manufacturer catalogs, and sim
 
 The Studio deliberately exposes only enough UI to exercise the architecture:
 
-- create a semantic construction shed;
-- create a connected rainwater system;
+- create a semantic construction shed using polygon floors/roofs and path walls;
+- create a connected rainwater system using routed path geometry;
 - create a solar microgrid and optionally connect it to a selected electrical load port;
 - create generic equipment;
-- select/move primitive entities;
+- select/render/translate box, path, and polygon entities;
 - inspect properties, ports, relations, provenance;
 - add first-class required parts;
 - inspect Build and Supply resolution;
