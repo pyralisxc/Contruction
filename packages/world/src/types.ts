@@ -15,7 +15,17 @@ export interface BoxGeometry {
   rotation?: Vec3
 }
 
-export type Geometry = BoxGeometry
+export interface PolylineGeometry {
+  type: 'polyline'
+  points: Vec3[]
+}
+
+export interface PolygonGeometry {
+  type: 'polygon'
+  points: Vec3[]
+}
+
+export type Geometry = BoxGeometry | PolylineGeometry | PolygonGeometry
 
 export type PropertyValue = string | number | boolean | null
 export type PropertyBag = Record<string, PropertyValue>
