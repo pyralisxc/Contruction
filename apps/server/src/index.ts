@@ -189,6 +189,11 @@ const proposalChangeSchema = z.discriminatedUnion('kind', [
     position: vec3Schema,
   }),
   z.object({
+    kind: z.literal('translateEntity'),
+    entityId: z.string().min(1),
+    delta: vec3Schema,
+  }),
+  z.object({
     kind: z.literal('renameEntity'),
     entityId: z.string().min(1),
     name: z.string().min(1),
@@ -290,6 +295,12 @@ function proposalTransaction(
           kind: 'moveEntity',
           entityId: change.entityId,
           position: change.position,
+        }
+      case 'translateEntity':
+        return {
+          kind: 'translateEntity',
+          entityId: change.entityId,
+          delta: change.delta,
         }
       case 'renameEntity':
         return {
@@ -832,6 +843,36 @@ const mcpHandler = createMcpHandler(() => {
           position: input.position,
         }],
         note: 'MCP move entity',
+      }))
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      }
+    },
+  )
+
+
+  server.registerTool(
+    'world_translate_entity',
+    {
+      description: 'Translate box, path, or polygon geometry by a delta through the canonical transaction path.',
+      inputSchema: z.object({
+        baseRevision: z.number().int().nonnegative(),
+        actor: actorSchema.optional(),
+        entityId: z.string().min(1),
+        delta: vec3Schema,
+      }),
+    },
+    async (input) => {
+      const actor = transactionActor(input.actor)
+      const result = store.apply(createTransaction({
+        baseRevision: input.baseRevision,
+        actor,
+        mutations: [{
+          kind: 'translateEntity',
+          entityId: input.entityId,
+          delta: input.delta,
+        }],
+        note: 'MCP translate entity',
       }))
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
