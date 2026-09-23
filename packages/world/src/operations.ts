@@ -147,6 +147,26 @@ function portById(entity: WorldEntity, portId: string) {
   return port
 }
 
+
+function pointGeometry(entity: WorldEntity) {
+  if (!entity.geometry || entity.geometry.type === 'box') {
+    throw new WorldValidationError(`Entity does not use point geometry: ${entity.id}`)
+  }
+  return entity.geometry
+}
+
+function requirePointIndex(entity: WorldEntity, index: number, allowEnd = false) {
+  const geometry = pointGeometry(entity)
+  if (!Number.isInteger(index)) {
+    throw new WorldValidationError('Geometry point index must be an integer')
+  }
+  const max = allowEnd ? geometry.points.length : geometry.points.length - 1
+  if (index < 0 || index > max) {
+    throw new WorldValidationError(`Geometry point index out of range on ${entity.id}: ${index}`)
+  }
+  return geometry
+}
+
 function applyMutation(world: WorldDocument, mutation: WorldMutation) {
   switch (mutation.kind) {
     case 'createEntity': {
@@ -205,6 +225,29 @@ function applyMutation(world: WorldDocument, mutation: WorldMutation) {
           z: point.z + mutation.delta.z,
         }))
       }
+      return
+    }
+    case 'setGeometryPoint': {
+      const entity = entityById(world, mutation.entityId)
+      const geometry = requirePointIndex(entity, mutation.index)
+      validateVec3('point', mutation.point)
+      geometry.points[mutation.index] = structuredClone(mutation.point)
+      validateEntity(entity)
+      return
+    }
+    case 'insertGeometryPoint': {
+      const entity = entityById(world, mutation.entityId)
+      const geometry = requirePointIndex(entity, mutation.index, true)
+      validateVec3('point', mutation.point)
+      geometry.points.splice(mutation.index, 0, structuredClone(mutation.point))
+      validateEntity(entity)
+      return
+    }
+    case 'removeGeometryPoint': {
+      const entity = entityById(world, mutation.entityId)
+      const geometry = requirePointIndex(entity, mutation.index)
+      geometry.points.splice(mutation.index, 1)
+      validateEntity(entity)
       return
     }
     case 'setProperty': {
