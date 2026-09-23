@@ -15,6 +15,13 @@ interface ProjectIndexFile {
   projects: ProjectRecord[]
 }
 
+function validateProjectId(id: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id)) {
+    throw new Error(`Invalid project id: ${id}`)
+  }
+  return id
+}
+
 function writeIndex(path: string, projects: ProjectRecord[]) {
   const temporaryPath = `${path}.tmp`
   writeFileSync(temporaryPath, JSON.stringify({
@@ -69,7 +76,7 @@ export class FileProjectRegistry {
     const trimmed = name.trim()
     if (!trimmed) throw new Error('Project name is required')
 
-    const id = options.id ?? createId('project')
+    const id = validateProjectId(options.id ?? createId('project'))
     if (this.#projects.some((project) => project.id === id)) {
       throw new Error(`Project already exists: ${id}`)
     }
