@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent } from 'react'
 
 import type { BuildGraph, BuildRequirement } from '../../../packages/build/src/index'
+import type { ProjectRecord } from '../../../packages/projects/src/index'
 import type { SupplyGraph } from '../../../packages/supply/src/index'
 import {
   ActorRef,
@@ -220,6 +221,8 @@ function GeometryPointRow({
 }
 
 export function App() {
+  const [projects, setProjects] = useState<ProjectRecord[]>([])
+  const [projectId, setProjectId] = useState<string | null>(null)
   const [world, setWorld] = useState<WorldDocument | null>(null)
   const [buildGraph, setBuildGraph] = useState<BuildGraph | null>(null)
   const [supplyGraph, setSupplyGraph] = useState<SupplyGraph | null>(null)
@@ -228,13 +231,28 @@ export function App() {
   const [connectionSource, setConnectionSource] = useState<{ entityId: string; portId: string } | null>(null)
   const [drawMode, setDrawMode] = useState<'polyline' | 'polygon' | null>(null)
   const [draftPoints, setDraftPoints] = useState<Vec3[]>([])
-  const [status, setStatus] = useState('Connecting to world...')
+  const [status, setStatus] = useState('Loading projects...')
+
+  const projectApi = useCallback((path: string) => {
+    if (!projectId) throw new Error('No project selected')
+    return `/api/projects/${encodeURIComponent(projectId)}${path}`
+  }, [projectId])
+
+  const loadProjectList = useCallback(async () => {
+    const response = await fetch('/api/projects')
+    if (!response.ok) throw new Error('Could not load projects')
+    const payload = await response.json()
+    const nextProjects = payload.projects as ProjectRecord[]
+    setProjects(nextProjects)
+    return nextProjects
+  }, [])
 
   const loadDerived = useCallback(async () => {
+    if (!projectId) return
     const [buildResponse, supplyResponse, proposalResponse] = await Promise.all([
-      fetch('/api/build-graph'),
-      fetch('/api/supply-graph'),
-      fetch('/api/proposals'),
+      fetch(projectApi('/build-graph')),
+      fetch(projectApi('/supply-graph')),
+      fetch(projectApi('/proposals')),
     ])
     if (!buildResponse.ok) throw new Error('Could not derive Build Graph')
     if (!supplyResponse.ok) throw new Error('Could not derive Supply Graph')
@@ -248,14 +266,15 @@ export function App() {
     setBuildGraph(buildPayload.buildGraph)
     setSupplyGraph(supplyPayload.supplyGraph)
     setProposals(proposalPayload.proposals)
-  }, [])
+  }, [projectApi, projectId])
 
   const loadWorld = useCallback(async () => {
+    if (!projectId) return
     const [worldResponse, buildResponse, supplyResponse, proposalResponse] = await Promise.all([
-      fetch('/api/world'),
-      fetch('/api/build-graph'),
-      fetch('/api/supply-graph'),
-      fetch('/api/proposals'),
+      fetch(projectApi('/world')),
+      fetch(projectApi('/build-graph')),
+      fetch(projectApi('/supply-graph')),
+      fetch(projectApi('/proposals')),
     ])
 
     if (!worldResponse.ok) throw new Error('Could not load world')
@@ -274,14 +293,40 @@ export function App() {
     setBuildGraph(buildPayload.buildGraph)
     setSupplyGraph(supplyPayload.supplyGraph)
     setProposals(proposalPayload.proposals)
-    setStatus('World synchronized')
-  }, [])
+    setStatus(`Project synchronized · ${worldPayload.project.name}`)
+  }, [projectApi, projectId])
 
   useEffect(() => {
+    loadProjectList()
+      .then((available) => {
+        if (available.length > 0) {
+          setProjectId((current) =>
+            current && available.some((project) => project.id === current)
+              ? current
+              : available[0].id
+          )
+        }
+      })
+      .catch((error) => {
+        setStatus(error instanceof Error ? error.message : 'Could not load projects')
+      })
+  }, [loadProjectList])
+
+  useEffect(() => {
+    if (!projectId) return
+    setWorld(null)
+    setBuildGraph(null)
+    setSupplyGraph(null)
+    setProposals([])
+    setSelectedId(null)
+    setConnectionSource(null)
+    setDrawMode(null)
+    setDraftPoints([])
+    setStatus('Loading project...')
     loadWorld().catch((error) => {
       setStatus(error instanceof Error ? error.message : 'Could not load world')
     })
-  }, [loadWorld])
+  }, [loadWorld, projectId])
 
   const selected = useMemo(
     () => world?.entities.find((entity) => entity.id === selectedId) ?? null,
