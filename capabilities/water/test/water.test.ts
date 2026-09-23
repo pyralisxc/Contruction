@@ -52,3 +52,53 @@ test('water capability contributes conceptual sourcing requirements through regi
   assert.equal(graph.requirements.every((requirement) => requirement.capabilityId === 'water'), true)
   assert.equal(graph.requirements.find((requirement) => requirement.name === 'Water pipe')?.quantity, 20)
 })
+
+
+test('editing routed pipe geometry immediately changes derived pipe quantity', () => {
+  const store = new InMemoryWorldStore(createEmptyWorld())
+  store.apply(createRainwaterSystemTransaction(0, {
+    capacityGallons: 750,
+    pipeRunFeet: 10,
+  }, human))
+
+  const registry = new CapabilityRegistry()
+  registry.register(waterCapability)
+
+  const pipe = store.snapshot().entities.find((entity) => entity.kind === 'water.pipe')
+  assert.ok(pipe)
+  assert.equal(pipe.geometry?.type, 'polyline')
+
+  const before = deriveBuildGraph(
+    store.snapshot(),
+    '2026-09-23T00:00:00.000Z',
+    registry.buildRequirementProviders(),
+  )
+  assert.equal(
+    before.requirements.find((requirement) => requirement.name === 'Water pipe')?.quantity,
+    10,
+  )
+
+  const points = pipe.geometry?.type === 'polyline' ? pipe.geometry.points : []
+  store.apply({
+    id: 'extend-pipe',
+    baseRevision: 1,
+    actor: human,
+    createdAt: '2026-09-23T00:02:00.000Z',
+    mutations: [{
+      kind: 'setGeometryPoint',
+      entityId: pipe.id,
+      index: 1,
+      point: { x: points[1].x + 5, y: points[1].y, z: points[1].z },
+    }],
+  })
+
+  const after = deriveBuildGraph(
+    store.snapshot(),
+    '2026-09-23T00:02:01.000Z',
+    registry.buildRequirementProviders(),
+  )
+  assert.equal(
+    after.requirements.find((requirement) => requirement.name === 'Water pipe')?.quantity,
+    15,
+  )
+})
