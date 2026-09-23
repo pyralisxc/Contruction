@@ -32,6 +32,8 @@ import {
   WorldMutation,
   WorldTransaction,
   createBoxEntity,
+  createPolylineEntity,
+  createPolygonEntity,
   createEmptyWorld,
   createId,
   createTransaction,
@@ -144,6 +146,8 @@ const vec3Schema = z.object({
   z: z.number(),
 })
 
+const primitivePropertiesSchema = z.record(z.string(), propertyValueSchema)
+
 const supplySourceKindSchema = z.enum([
   'inventory',
   'reuse',
@@ -181,7 +185,23 @@ const proposalChangeSchema = z.discriminatedUnion('kind', [
     parentId: z.string().min(1).optional(),
     position: vec3Schema,
     size: vec3Schema,
-    properties: z.record(z.string(), propertyValueSchema).optional(),
+    properties: primitivePropertiesSchema.optional(),
+  }),
+  z.object({
+    kind: z.literal('createPolyline'),
+    entityKind: z.string().min(1),
+    name: z.string().min(1),
+    parentId: z.string().min(1).optional(),
+    points: z.array(vec3Schema).min(2),
+    properties: primitivePropertiesSchema.optional(),
+  }),
+  z.object({
+    kind: z.literal('createPolygon'),
+    entityKind: z.string().min(1),
+    name: z.string().min(1),
+    parentId: z.string().min(1).optional(),
+    points: z.array(vec3Schema).min(3),
+    properties: primitivePropertiesSchema.optional(),
   }),
   z.object({
     kind: z.literal('moveEntity'),
@@ -285,6 +305,32 @@ function proposalTransaction(
             parentId: change.parentId,
             position: change.position,
             size: change.size,
+            properties: change.properties,
+            actor,
+            at,
+          }),
+        }
+      case 'createPolyline':
+        return {
+          kind: 'createEntity',
+          entity: createPolylineEntity({
+            kind: change.entityKind,
+            name: change.name,
+            parentId: change.parentId,
+            points: change.points,
+            properties: change.properties,
+            actor,
+            at,
+          }),
+        }
+      case 'createPolygon':
+        return {
+          kind: 'createEntity',
+          entity: createPolygonEntity({
+            kind: change.entityKind,
+            name: change.name,
+            parentId: change.parentId,
+            points: change.points,
             properties: change.properties,
             actor,
             at,
@@ -811,6 +857,85 @@ const mcpHandler = createMcpHandler(() => {
         actor,
         mutations: [{ kind: 'createEntity', entity }],
         note: 'MCP create box',
+      }))
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({ entityId: entity.id, revision: result.revision, world: result.world }, null, 2),
+        }],
+      }
+    },
+  )
+
+
+  server.registerTool(
+    'world_create_polyline',
+    {
+      description: 'Create a path-like physical entity through the canonical World transaction path.',
+      inputSchema: z.object({
+        baseRevision: z.number().int().nonnegative(),
+        actor: actorSchema.optional(),
+        kind: z.string().min(1),
+        name: z.string().min(1),
+        parentId: z.string().optional(),
+        points: z.array(vec3Schema).min(2),
+        properties: primitivePropertiesSchema.optional(),
+      }),
+    },
+    async (input) => {
+      const actor = transactionActor(input.actor)
+      const entity = createPolylineEntity({
+        kind: input.kind,
+        name: input.name,
+        parentId: input.parentId,
+        points: input.points,
+        properties: input.properties,
+        actor,
+      })
+      const result = store.apply(createTransaction({
+        baseRevision: input.baseRevision,
+        actor,
+        mutations: [{ kind: 'createEntity', entity }],
+        note: 'MCP create polyline',
+      }))
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({ entityId: entity.id, revision: result.revision, world: result.world }, null, 2),
+        }],
+      }
+    },
+  )
+
+  server.registerTool(
+    'world_create_polygon',
+    {
+      description: 'Create an area-like physical entity through the canonical World transaction path.',
+      inputSchema: z.object({
+        baseRevision: z.number().int().nonnegative(),
+        actor: actorSchema.optional(),
+        kind: z.string().min(1),
+        name: z.string().min(1),
+        parentId: z.string().optional(),
+        points: z.array(vec3Schema).min(3),
+        properties: primitivePropertiesSchema.optional(),
+      }),
+    },
+    async (input) => {
+      const actor = transactionActor(input.actor)
+      const entity = createPolygonEntity({
+        kind: input.kind,
+        name: input.name,
+        parentId: input.parentId,
+        points: input.points,
+        properties: input.properties,
+        actor,
+      })
+      const result = store.apply(createTransaction({
+        baseRevision: input.baseRevision,
+        actor,
+        mutations: [{ kind: 'createEntity', entity }],
+        note: 'MCP create polygon',
       }))
       return {
         content: [{
