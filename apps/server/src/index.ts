@@ -23,6 +23,7 @@ import {
   FileSupplyObservationStore,
   SupplyObservation,
   deriveSupplyGraph,
+  requirementSignature,
 } from '../../../packages/supply/src/index'
 import {
   ActorRef,
@@ -312,10 +313,21 @@ const solarMicrogridInputSchema = z.object({
 function normalizeSupplyObservation(
   input: z.infer<typeof supplyObservationInputSchema>,
 ): SupplyObservation {
+  const requirement = input.requirementId
+    ? buildGraph().requirements.find((candidate) => candidate.id === input.requirementId)
+    : undefined
+
+  if (input.requirementId && !requirement) {
+    throw new Error(`Unknown Build requirement: ${input.requirementId}`)
+  }
+
   return {
     ...input,
     id: input.id ?? createId('supply-observation'),
     observedAt: input.observedAt ?? new Date().toISOString(),
+    requirementSignature: requirement ? requirementSignature(requirement) : undefined,
+    specification: input.specification ?? requirement?.specification,
+    name: input.name ?? requirement?.name,
   }
 }
 
