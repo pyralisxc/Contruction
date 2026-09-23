@@ -328,6 +328,27 @@ export function App() {
     })
   }, [loadWorld, projectId])
 
+  const createProject = useCallback(async () => {
+    const name = window.prompt('Project name')
+    if (!name?.trim()) return
+
+    setStatus('Creating project...')
+    const response = await fetch('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name.trim() }),
+    })
+    const payload = await response.json()
+    if (!response.ok) {
+      setStatus(payload.error ?? 'Project creation failed')
+      return
+    }
+
+    await loadProjectList()
+    setProjectId(payload.project.id)
+    setStatus(`Created project · ${payload.project.name}`)
+  }, [loadProjectList])
+
   const selected = useMemo(
     () => world?.entities.find((entity) => entity.id === selectedId) ?? null,
     [selectedId, world],
@@ -380,7 +401,7 @@ export function App() {
       note,
     })
 
-    const response = await fetch('/api/transactions', {
+    const response = await fetch(projectApi('/transactions'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(transaction),
@@ -395,11 +416,11 @@ export function App() {
     setWorld(payload.world)
     await loadDerived()
     setStatus(`Revision ${payload.revision} accepted and persisted`)
-  }, [loadDerived, loadWorld, world])
+  }, [loadDerived, loadWorld, projectApi, world])
 
   const recordSupplyObservation = useCallback(async (input: Record<string, unknown>) => {
     setStatus('Recording sourcing observation...')
-    const response = await fetch('/api/supply-observations', {
+    const response = await fetch(projectApi('/supply-observations'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
@@ -413,7 +434,7 @@ export function App() {
 
   const applyProposal = useCallback(async (proposalId: string) => {
     setStatus('Applying proposal...')
-    const response = await fetch(`/api/proposals/${encodeURIComponent(proposalId)}/apply`, {
+    const response = await fetch(projectApi(`/proposals/${encodeURIComponent(proposalId)}/apply`), {
       method: 'POST',
     })
     const payload = await response.json()
@@ -423,16 +444,16 @@ export function App() {
     }
     await loadWorld()
     setStatus('Proposal accepted into World')
-  }, [loadWorld])
+  }, [loadWorld, projectApi])
 
   const discardProposal = useCallback(async (proposalId: string) => {
-    const response = await fetch(`/api/proposals/${encodeURIComponent(proposalId)}`, {
+    const response = await fetch(projectApi(`/proposals/${encodeURIComponent(proposalId)}`), {
       method: 'DELETE',
     })
     if (!response.ok) throw new Error('Proposal discard failed')
     setProposals((current) => current.filter((item) => item.proposal.id !== proposalId))
     setStatus('Proposal discarded')
-  }, [])
+  }, [projectApi])
 
   const markOwned = useCallback(async (requirement: BuildRequirement) => {
     await recordSupplyObservation({
@@ -539,7 +560,7 @@ export function App() {
   const addConceptShed = useCallback(async () => {
     if (!world) return
     setStatus('Creating semantic construction shell...')
-    const response = await fetch('/api/construction/concept-shed', {
+    const response = await fetch(projectApi('/construction/concept-shed'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -559,12 +580,12 @@ export function App() {
     }
     await loadWorld()
     setStatus('Construction capability created conceptual shed')
-  }, [loadWorld, world])
+  }, [loadWorld, projectApi, world])
 
   const addRainwaterSystem = useCallback(async () => {
     if (!world) return
     setStatus('Creating connected rainwater system...')
-    const response = await fetch('/api/water/rainwater-system', {
+    const response = await fetch(projectApi('/water/rainwater-system'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -584,12 +605,12 @@ export function App() {
     }
     await loadWorld()
     setStatus('Water capability created connected system')
-  }, [loadWorld, world])
+  }, [loadWorld, projectApi, world])
 
   const addSolarMicrogrid = useCallback(async () => {
     if (!world) return
     setStatus(selectedPowerPort ? 'Creating solar microgrid and connecting selected load...' : 'Creating solar microgrid...')
-    const response = await fetch('/api/energy/solar-microgrid', {
+    const response = await fetch(projectApi('/energy/solar-microgrid'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -614,7 +635,7 @@ export function App() {
     }
     await loadWorld()
     setStatus(selectedPowerPort ? 'Energy capability connected microgrid to selected load' : 'Energy capability created microgrid')
-  }, [loadWorld, selected, selectedPowerPort, world])
+  }, [loadWorld, projectApi, selected, selectedPowerPort, world])
 
   const addThing = useCallback(async (
     kind: string,
@@ -852,6 +873,18 @@ export function App() {
         <div>
           <span className="eyebrow">CONTRACTOR HUB vNEXT</span>
           <h1>{world.name}</h1>
+        </div>
+        <div className="project-controls">
+          <select
+            value={projectId ?? ''}
+            onChange={(event) => setProjectId(event.target.value)}
+            aria-label="Current project"
+          >
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>{project.name}</option>
+            ))}
+          </select>
+          <button onClick={createProject}>+ Project</button>
         </div>
         <div className="world-meta">
           <span>revision {world.revision}</span>
