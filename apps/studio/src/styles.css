@@ -477,3 +477,56 @@ dd {
   color: #738199;
   text-align: right;
 }
+
+
+.shape-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  z-index: 1;
+}
+
+.shape-entity {
+  cursor: pointer;
+  outline: none;
+}
+
+.shape-entity polygon {
+  fill: rgba(61, 84, 108, 0.22);
+  stroke: #607c96;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.shape-entity polyline {
+  fill: none;
+  stroke: #7da2bf;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.shape-entity .shape-hit-target {
+  stroke: transparent;
+  stroke-width: 14;
+}
+
+.shape-entity.selected polygon,
+.shape-entity:focus-visible polygon {
+  fill: rgba(118, 172, 159, 0.2);
+  stroke: #9bd5c6;
+  stroke-width: 2.5;
+}
+
+.shape-entity.selected polyline:not(.shape-hit-target),
+.shape-entity:focus-visible polyline:not(.shape-hit-target) {
+  stroke: #9bd5c6;
+  stroke-width: 4;
+}
+
+.canvas-entity {
+  z-index: 2;
+}
