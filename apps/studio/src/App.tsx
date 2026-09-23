@@ -10,13 +10,16 @@ import {
   WorldEntity,
   WorldMutation,
   WorldTransaction,
+  checkPortCompatibility,
   createBoxEntity,
+  createId,
   createPolylineEntity,
   createPolygonEntity,
   createTransaction,
   geometryAnchor,
   polygonAreaXY,
   polylineLength,
+  portDirection,
 } from '../../../packages/world/src/index'
 
 interface ProposalView {
@@ -222,6 +225,7 @@ export function App() {
   const [supplyGraph, setSupplyGraph] = useState<SupplyGraph | null>(null)
   const [proposals, setProposals] = useState<ProposalView[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [connectionSource, setConnectionSource] = useState<{ entityId: string; portId: string } | null>(null)
   const [drawMode, setDrawMode] = useState<'polyline' | 'polygon' | null>(null)
   const [draftPoints, setDraftPoints] = useState<Vec3[]>([])
   const [status, setStatus] = useState('Connecting to world...')
@@ -312,6 +316,13 @@ export function App() {
     () => selected?.ports.find((port) => port.kind === 'electrical.power.in') ?? null,
     [selected],
   )
+
+  const connectionSourceDetail = useMemo(() => {
+    if (!world || !connectionSource) return null
+    const entity = world.entities.find((candidate) => candidate.id === connectionSource.entityId)
+    const port = entity?.ports.find((candidate) => candidate.id === connectionSource.portId)
+    return entity && port ? { entity, port } : null
+  }, [connectionSource, world])
 
   const applyMutations = useCallback(async (mutations: WorldMutation[], note?: string) => {
     if (!world) return
@@ -604,6 +615,63 @@ export function App() {
     )
     setSelectedId(part.id)
   }, [applyMutations, selected, world])
+
+  const addSelectedPort = useCallback(async () => {
+    if (!selected) return
+    const name = window.prompt('Port name')
+    if (!name?.trim()) return
+    const kind = window.prompt(
+      'Port kind (examples: fluid.water.in, fluid.water.out, electrical.ac.in, electrical.ac.out)',
+    )
+    if (!kind?.trim()) return
+
+    try {
+      await applyMutations([{
+        kind: 'addPort',
+        entityId: selected.id,
+        port: {
+          id: createId('port'),
+          kind: kind.trim(),
+          name: name.trim(),
+        },
+      }], `Add ${name.trim()} port to ${selected.name}`)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Could not add port')
+    }
+  }, [applyMutations, selected])
+
+  const startPortConnection = useCallback((entityId: string, portId: string) => {
+    setConnectionSource({ entityId, portId })
+    setStatus('Connection source selected. Choose a compatible target input.')
+  }, [])
+
+  const connectToPort = useCallback(async (entityId: string, portId: string) => {
+    if (!world || !connectionSourceDetail) return
+    const targetEntity = world.entities.find((candidate) => candidate.id === entityId)
+    const targetPort = targetEntity?.ports.find((candidate) => candidate.id === portId)
+    if (!targetEntity || !targetPort) return
+
+    const compatibility = checkPortCompatibility(connectionSourceDetail.port, targetPort)
+    if (!compatibility.compatible) {
+      setStatus(compatibility.reason ?? 'Ports are not compatible')
+      return
+    }
+
+    try {
+      await applyMutations([{
+        kind: 'connectPorts',
+        relationId: createId('connection'),
+        fromEntityId: connectionSourceDetail.entity.id,
+        fromPortId: connectionSourceDetail.port.id,
+        toEntityId: targetEntity.id,
+        toPortId: targetPort.id,
+      }], `Connect ${connectionSourceDetail.entity.name} to ${targetEntity.name}`)
+      setConnectionSource(null)
+      setStatus('Ports connected')
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Could not connect ports')
+    }
+  }, [applyMutations, connectionSourceDetail, world])
 
   const setSelectedProperty = useCallback(async (
     key: string,
@@ -1016,28 +1084,74 @@ export function App() {
                 </div>
               )}
 
-              {(selected.ports.length > 0 || selectedRelations.length > 0) && (
-                <div className="detail-group">
+              <div className="detail-group">
+                <div className="section-heading-row">
                   <h3>Ports / Connections</h3>
-                  {selected.ports.map((port) => (
-                    <div className="connection-row" key={port.id}>
-                      <span>{port.name}</span>
-                      <small>{port.kind}</small>
-                    </div>
-                  ))}
-                  {selectedRelations.map((relation) => {
-                    const outbound = relation.fromEntityId === selected.id
-                    const otherId = outbound ? relation.toEntityId : relation.fromEntityId
-                    const other = world.entities.find((entity) => entity.id === otherId)
-                    return (
-                      <div className="connection-row" key={relation.id}>
-                        <span>{outbound ? '→' : '←'} {other?.name ?? otherId}</span>
-                        <small>{relation.kind}</small>
-                      </div>
-                    )
-                  })}
+                  <button className="mini-button" onClick={addSelectedPort}>+ Port</button>
                 </div>
-              )}
+                {connectionSourceDetail && (
+                  <div className="connection-source-banner">
+                    <span>Connecting from</span>
+                    <strong>{connectionSourceDetail.entity.name} · {connectionSourceDetail.port.name}</strong>
+                    <button onClick={() => setConnectionSource(null)}>Cancel</button>
+                  </div>
+                )}
+                {selected.ports.length === 0 && selectedRelations.length === 0 ? (
+                  <p className="muted">No interfaces or connections yet.</p>
+                ) : (
+                  <>
+                    {selected.ports.map((port) => {
+                      const direction = portDirection(port.kind)
+                      const isSource =
+                        connectionSource?.entityId === selected.id &&
+                        connectionSource?.portId === port.id
+                      const compatibleTarget =
+                        connectionSourceDetail &&
+                        !(isSource) &&
+                        checkPortCompatibility(connectionSourceDetail.port, port).compatible
+
+                      return (
+                        <div className="connection-row connection-port-row" key={port.id}>
+                          <div>
+                            <span>{port.name}</span>
+                            <small>{port.kind}</small>
+                          </div>
+                          <div className="connection-actions">
+                            {isSource ? (
+                              <button onClick={() => setConnectionSource(null)}>Cancel</button>
+                            ) : connectionSourceDetail ? (
+                              <button
+                                disabled={!compatibleTarget}
+                                onClick={() => connectToPort(selected.id, port.id)}
+                              >
+                                Connect
+                              </button>
+                            ) : (
+                              <button
+                                disabled={direction !== 'out' && direction !== 'bidirectional'}
+                                onClick={() => startPortConnection(selected.id, port.id)}
+                              >
+                                From
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                    {selectedRelations.map((relation) => {
+                      const outbound = relation.fromEntityId === selected.id
+                      const otherId = outbound ? relation.toEntityId : relation.fromEntityId
+                      const other = world.entities.find((entity) => entity.id === otherId)
+                      return (
+                        <div className="connection-row" key={relation.id}>
+                          <span>{outbound ? '→' : '←'} {other?.name ?? otherId}</span>
+                          <small>{relation.kind}</small>
+                        </div>
+                      )
+                    })}
+                  </>
+                )}
+              </div>
 
               <div className="detail-group">
                 <div className="section-heading-row">
