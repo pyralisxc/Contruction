@@ -75,6 +75,77 @@ function entityStyle(entity: WorldEntity) {
 }
 
 
+const READ_ONLY_PROPERTIES = new Set(['capability', 'fidelity'])
+
+function PropertyEditorRow({
+  name,
+  value,
+  knowledge,
+  readOnly,
+  onSave,
+}: {
+  name: string
+  value: string | number | boolean | null
+  knowledge?: WorldEntity['propertyKnowledge'][string]
+  readOnly: boolean
+  onSave: (name: string, value: string | number | boolean | null) => void
+}) {
+  const [draft, setDraft] = useState(value === null ? '' : String(value))
+
+  useEffect(() => {
+    setDraft(value === null ? '' : String(value))
+  }, [value])
+
+  const save = () => {
+    if (readOnly || value === null) return
+    if (typeof value === 'number') {
+      const parsed = Number(draft)
+      if (!Number.isFinite(parsed)) return
+      onSave(name, parsed)
+      return
+    }
+    if (typeof value === 'boolean') {
+      onSave(name, draft === 'true')
+      return
+    }
+    onSave(name, draft)
+  }
+
+  return (
+    <div className="property-row">
+      <div className="property-heading">
+        <span>{name}</span>
+        <small>
+          {knowledge
+            ? `${knowledge.basis} · ${knowledge.provenance.origin}`
+            : 'inherits entity provenance'}
+        </small>
+      </div>
+      {readOnly || value === null ? (
+        <strong>{value === null ? 'null' : String(value)}</strong>
+      ) : typeof value === 'boolean' ? (
+        <select value={draft} onChange={(event) => setDraft(event.target.value)}>
+          <option value="true">true</option>
+          <option value="false">false</option>
+        </select>
+      ) : (
+        <input
+          type={typeof value === 'number' ? 'number' : 'text'}
+          step={typeof value === 'number' ? 'any' : undefined}
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') save()
+          }}
+        />
+      )}
+      {!readOnly && value !== null && (
+        <button onClick={save}>Save</button>
+      )}
+    </div>
+  )
+}
+
 function GeometryPointRow({
   point,
   index,
@@ -534,6 +605,49 @@ export function App() {
     setSelectedId(part.id)
   }, [applyMutations, selected, world])
 
+  const setSelectedProperty = useCallback(async (
+    key: string,
+    value: string | number | boolean | null,
+  ) => {
+    if (!selected) return
+    try {
+      await applyMutations([{
+        kind: 'setProperty',
+        entityId: selected.id,
+        key,
+        value,
+        knowledge: {
+          basis: 'chosen',
+          confidence: 'high',
+          note: 'Edited in Contractor Hub Studio',
+        },
+      }], `Set ${selected.name} ${key}`)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Could not update property')
+    }
+  }, [applyMutations, selected])
+
+  const addSelectedProperty = useCallback(async () => {
+    if (!selected) return
+    const key = window.prompt('Property name')
+    if (!key?.trim()) return
+    if (READ_ONLY_PROPERTIES.has(key.trim())) {
+      setStatus(`${key.trim()} is owned by the system/capability`)
+      return
+    }
+    const raw = window.prompt('Property value')
+    if (raw === null) return
+
+    let value: string | number | boolean | null = raw
+    const trimmed = raw.trim()
+    if (trimmed === 'true') value = true
+    else if (trimmed === 'false') value = false
+    else if (trimmed === 'null') value = null
+    else if (trimmed !== '' && Number.isFinite(Number(trimmed))) value = Number(trimmed)
+
+    await setSelectedProperty(key.trim(), value)
+  }, [selected, setSelectedProperty])
+
   const moveSelected = useCallback(async (dx: number, dy: number) => {
     if (!selected?.geometry) return
     await applyMutations([{
@@ -926,15 +1040,25 @@ export function App() {
               )}
 
               <div className="detail-group">
-                <h3>Properties</h3>
+                <div className="section-heading-row">
+                  <h3>Properties</h3>
+                  <button className="mini-button" onClick={addSelectedProperty}>+ Property</button>
+                </div>
                 {Object.keys(selected.properties).length === 0 ? (
                   <p className="muted">No specialized properties yet.</p>
                 ) : (
-                  <dl>
+                  <div className="property-editor">
                     {Object.entries(selected.properties).map(([key, value]) => (
-                      <div key={key}><dt>{key}</dt><dd>{String(value)}</dd></div>
+                      <PropertyEditorRow
+                        key={key}
+                        name={key}
+                        value={value}
+                        knowledge={selected.propertyKnowledge?.[key]}
+                        readOnly={READ_ONLY_PROPERTIES.has(key)}
+                        onSave={setSelectedProperty}
+                      />
                     ))}
-                  </dl>
+                  </div>
                 )}
               </div>
 
