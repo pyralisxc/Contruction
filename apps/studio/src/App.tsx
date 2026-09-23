@@ -1,15 +1,18 @@
-import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent } from 'react'
 
 import type { BuildGraph, BuildRequirement } from '../../../packages/build/src/index'
 import type { SupplyGraph } from '../../../packages/supply/src/index'
 import {
   ActorRef,
+  Vec3,
   WorldDiff,
   WorldDocument,
   WorldEntity,
   WorldMutation,
   WorldTransaction,
   createBoxEntity,
+  createPolylineEntity,
+  createPolygonEntity,
   createTransaction,
   geometryAnchor,
   polygonAreaXY,
@@ -40,15 +43,23 @@ function toCanvasPoint(point: { x: number; y: number }) {
   }
 }
 
-function pointsAttribute(entity: WorldEntity): string {
-  const geometry = entity.geometry
-  if (!geometry || geometry.type === 'box') return ''
-  return geometry.points
+function pointsToAttribute(points: Vec3[]): string {
+  return points
     .map((point) => {
       const canvas = toCanvasPoint(point)
       return `${canvas.x},${canvas.y}`
     })
     .join(' ')
+}
+
+function pointsAttribute(entity: WorldEntity): string {
+  const geometry = entity.geometry
+  if (!geometry || geometry.type === 'box') return ''
+  return pointsToAttribute(geometry.points)
+}
+
+function snapHalfFoot(value: number): number {
+  return Math.round(value * 2) / 2
 }
 
 function entityStyle(entity: WorldEntity) {
@@ -69,6 +80,8 @@ export function App() {
   const [supplyGraph, setSupplyGraph] = useState<SupplyGraph | null>(null)
   const [proposals, setProposals] = useState<ProposalView[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [drawMode, setDrawMode] = useState<'polyline' | 'polygon' | null>(null)
+  const [draftPoints, setDraftPoints] = useState<Vec3[]>([])
   const [status, setStatus] = useState('Connecting to world...')
 
   const loadDerived = useCallback(async () => {
@@ -265,6 +278,66 @@ export function App() {
     })
   }, [recordSupplyObservation])
 
+  const startDrawing = useCallback((mode: 'polyline' | 'polygon') => {
+    setDrawMode(mode)
+    setDraftPoints([])
+    setSelectedId(null)
+    setStatus(mode === 'polyline'
+      ? 'Draw path: click points on the canvas, then Finish.'
+      : 'Draw area: click boundary points on the canvas, then Finish.')
+  }, [])
+
+  const cancelDrawing = useCallback(() => {
+    setDrawMode(null)
+    setDraftPoints([])
+    setStatus('Drawing cancelled')
+  }, [])
+
+  const handleCanvasClick = useCallback((event: MouseEvent<HTMLElement>) => {
+    if (!drawMode) return
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const x = snapHalfFoot((event.clientX - bounds.left - CANVAS_ORIGIN_X) / CANVAS_SCALE)
+    const y = snapHalfFoot((event.clientY - bounds.top - CANVAS_ORIGIN_Y) / CANVAS_SCALE)
+    const nextPoint = { x, y, z: 0 }
+    setDraftPoints((current) => [...current, nextPoint])
+    setStatus(`${drawMode === 'polyline' ? 'Path' : 'Area'} point added at ${x}, ${y}`)
+  }, [drawMode])
+
+  const finishDrawing = useCallback(async () => {
+    if (!world || !drawMode) return
+    const minimum = drawMode === 'polyline' ? 2 : 3
+    if (draftPoints.length < minimum) {
+      setStatus(`${drawMode === 'polyline' ? 'Path' : 'Area'} needs at least ${minimum} points`)
+      return
+    }
+
+    const entity = drawMode === 'polyline'
+      ? createPolylineEntity({
+          kind: 'geometry.path',
+          name: 'Custom path',
+          points: draftPoints,
+          properties: { fidelity: 'concept', authoredIn: 'studio' },
+          actor: human,
+        })
+      : createPolygonEntity({
+          kind: 'geometry.area',
+          name: 'Custom area',
+          points: draftPoints,
+          properties: { fidelity: 'concept', authoredIn: 'studio' },
+          actor: human,
+        })
+
+    try {
+      await applyMutations([{ kind: 'createEntity', entity }], `Draw ${entity.name}`)
+      setSelectedId(entity.id)
+      setDrawMode(null)
+      setDraftPoints([])
+      setStatus(`${entity.name} accepted into World`)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Could not finish drawing')
+    }
+  }, [applyMutations, draftPoints, drawMode, world])
+
   const addConceptShed = useCallback(async () => {
     if (!world) return
     setStatus('Creating semantic construction shell...')
@@ -426,6 +499,29 @@ export function App() {
       </header>
 
       <section className="creation-bar">
+        <button
+          className={drawMode === 'polyline' ? 'active-tool' : ''}
+          onClick={() => startDrawing('polyline')}
+        >
+          + Draw path
+        </button>
+        <button
+          className={drawMode === 'polygon' ? 'active-tool' : ''}
+          onClick={() => startDrawing('polygon')}
+        >
+          + Draw area
+        </button>
+        {drawMode && (
+          <>
+            <button
+              onClick={finishDrawing}
+              disabled={draftPoints.length < (drawMode === 'polyline' ? 2 : 3)}
+            >
+              Finish
+            </button>
+            <button onClick={cancelDrawing}>Cancel</button>
+          </>
+        )}
         <button onClick={addConceptShed}>
           + Concept shed
         </button>
@@ -455,7 +551,10 @@ export function App() {
                 <button
                   key={entity.id}
                   className={entity.id === selectedId ? 'selected' : ''}
-                  onClick={() => setSelectedId(entity.id)}
+                  onClick={(event) => {
+                  event.stopPropagation()
+                  setSelectedId(entity.id)
+                }}
                 >
                   <span>{entity.name}</span>
                   <small>{entity.kind}</small>
@@ -465,7 +564,11 @@ export function App() {
           )}
         </aside>
 
-        <section className="world-canvas" aria-label="World canvas">
+        <section
+          className={`world-canvas ${drawMode ? 'is-drawing' : ''}`}
+          aria-label="World canvas"
+          onClick={handleCanvasClick}
+        >
           <div className="canvas-grid" />
           <div className="origin-marker">0,0</div>
           <svg className="shape-layer" aria-label="Path and area geometry">
@@ -490,7 +593,10 @@ export function App() {
                     tabIndex={0}
                     aria-label={entity.name}
                     className={className}
-                    onClick={handleSelect}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      handleSelect()
+                    }}
                     onKeyDown={handleKeyDown}
                   >
                     {geometry.type === 'polygon' ? (
@@ -504,6 +610,18 @@ export function App() {
                   </g>
                 )
               })}
+            {drawMode && draftPoints.length > 0 && (
+              <g className="draft-geometry" aria-hidden="true">
+                {drawMode === 'polygon' && draftPoints.length >= 3 && (
+                  <polygon className="draft-area" points={pointsToAttribute(draftPoints)} />
+                )}
+                <polyline className="draft-path" points={pointsToAttribute(draftPoints)} />
+                {draftPoints.map((point, index) => {
+                  const canvas = toCanvasPoint(point)
+                  return <circle key={index} cx={canvas.x} cy={canvas.y} r={4} />
+                })}
+              </g>
+            )}
           </svg>
           {world.entities
             .filter((entity) => entity.geometry?.type === 'box')
