@@ -86,7 +86,7 @@ function PropertyEditorRow({
 }: {
   name: string
   value: string | number | boolean | null
-  knowledge?: WorldEntity['propertyKnowledge'][string]
+  knowledge?: NonNullable<WorldEntity['propertyKnowledge']>[string]
   readOnly: boolean
   onSave: (name: string, value: string | number | boolean | null) => void
 }) {
